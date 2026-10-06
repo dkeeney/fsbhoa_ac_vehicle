@@ -23,6 +23,33 @@ require_once FSBHOA_AC_VEHICLE_DIR . 'includes/class-fsbhoa-vehicle-settings.php
  */
 FSBHOA_Vehicle_Settings::get_instance();
 
+add_action( 'wp_enqueue_scripts', 'fsbhoa_vehicle_enqueue_monitor_assets', 30 );
+add_action( 'admin_enqueue_scripts', 'fsbhoa_vehicle_enqueue_monitor_assets', 30 );
+function fsbhoa_vehicle_enqueue_monitor_assets() {
+    global $post;
+
+    $load = false;
+    if ( is_admin() ) {
+        if ( isset( $_GET['page'] ) && strpos( sanitize_text_field( wp_unslash($_GET['page'] ) ), 'monitor' ) !== false ) {
+            $load = true;
+        }
+    } elseif ( $post instanceof WP_Post ) {
+        if ( has_shortcode( $post->post_content, 'fsbhoa_live_monitor' ) || strpos($post->post_content, 'fsbhoa_live_monitor' ) !== false ) {
+            $load = true;
+        }
+    }
+
+    if ( $load ) {
+        wp_enqueue_script(
+            'fsbhoa-vehicle-monitor-js',
+            FSBHOA_AC_VEHICLE_URL . 'assets/js/fsbhoa-vehicle-monitor.js',
+            array(), // No strict dependency handle
+            FSBHOA_AC_VEHICLE_VERSION . '.' . time(),
+            true
+        );
+    }
+}
+
 
 /**
  * Register Vehicle Daemon on the Core System Status dashboard.
@@ -116,6 +143,7 @@ function fsbhoa_ac_vehicle_ingest_event( WP_REST_Request $request ) {
 		'event_timestamp'    => $timestamp,
 		'gate_identifier'    => sanitize_text_field( $params['gate_identifier'] ?? '' ),
 		'auth_id'           => sanitize_text_field( $params['auth_id'] ?? '' ),
+        'auth_type'          => sanitize_text_field( $params['auth_type'] ?? '' ),
 		'lpr_plate_string'   => sanitize_text_field( $params['lpr_plate'] ?? '' ),
 		'lpr_confidence'   => $confidence,
 		'is_circumvention'   => ! empty( $params['is_circumvention'] ) ? 1 : 0,
@@ -124,7 +152,7 @@ function fsbhoa_ac_vehicle_ingest_event( WP_REST_Request $request ) {
 		'raw_details'         => $raw_details,
 	);
 
-	$formats = array( '%s', '%s', '%s', '%s', '%d', '%d', '%s', '%s', '%s' );
+	$formats = array( '%s', '%s', '%s', '%s', '%s', '%d', '%d', '%s', '%s', '%s' );
 	$inserted = $wpdb->insert( $table, $data, $formats );
 
 	if ( false === $inserted ) {
@@ -167,50 +195,81 @@ function fsbhoa_ac_vehicle_serve_image( WP_REST_Request $request ) {
 }
 
 /**
- * Deliver Lightweight JSON for UI Polling
+ * Deliver Lightweight JSON for UI Polling with Cardholder Resolution (Last 24 Hours)
  */
 function fsbhoa_ac_vehicle_get_recent( WP_REST_Request $request ) {
-	global $wpdb;
-	$table = 'ac_vehicle_log';
-	$since = absint( $request->get_param( 'since' ) );
+        global $wpdb;
+        $table = 'ac_vehicle_log';
+        $since = absint($request->get_param( 'since' ) );
 
-	if ( $since > 0 ) {
-		$query = $wpdb->prepare(
-			"SELECT vehicle_log_id, event_timestamp, gate_identifier, auth_id, lpr_plate_string, lpr_confidence, is_circumvention,
-			       (context_image_data IS NOT NULL) AS has_context_img,
-			       (lpr_image_data IS NOT NULL) AS has_lpr_img
-			 FROM {$table}
-			 WHERE vehicle_log_id > %d
-			 ORDER BY vehicle_log_id ASC
-			 LIMIT 50",
-			$since
-		);
-	} else {
-		$query = "SELECT vehicle_log_id, event_timestamp, gate_identifier, auth_id, lpr_plate_string, lpr_confidence, is_circumvention,
-			       (context_image_data IS NOT NULL) AS has_context_img,
-			       (lpr_image_data IS NOT NULL) AS has_lpr_img
-			 FROM {$table}
-			 ORDER BY vehicle_log_id DESC
-			 LIMIT 20";
-	}
+        $select_fields = "
+                vl.vehicle_log_id, 
+                vl.event_timestamp, 
+                vl.gate_identifier, 
+                vl.auth_id, 
+                vl.auth_type,
+                vl.lpr_plate_string, 
+                vl.lpr_confidence, 
+                vl.is_circumvention,
+                (vl.context_image_data IS NOT NULL) AS has_context_img,
+                (vl.lpr_image_data IS NOT NULL) AS has_lpr_img,
+                COALESCE(
+                    CASE WHEN vl.auth_type = 'DK_WINDSHIELD' THEN NULLIF(h.primary_cardholder_id, 0) END,
+                    NULLIF(cred.cardholder_id, 0),
+                    h.primary_cardholder_id,
+                    0
+                ) AS cardholder_id,
+                COALESCE(
+                    CASE WHEN vl.auth_type = 'DK_WINDSHIELD' THEN NULLIF(TRIM(CONCAT(c_primary.first_name, ' ', c_primary.last_name)), '') END,
+                    NULLIF(TRIM(CONCAT(c_direct.first_name, ' ', c_direct.last_name)), ''),
+                    NULLIF(TRIM(CONCAT(c_primary.first_name, ' ', c_primary.last_name)), ''),
+                    ''
+                ) AS cardholder_name
+        ";
 
-	$results = $wpdb->get_results( $query, ARRAY_A );
+        $joins = "
+                LEFT JOIN ac_credentials cred 
+                    ON cred.credential_type = vl.auth_type 
+                   AND cred.credential_value = vl.auth_id
+                LEFT JOIN ac_cardholders c_direct 
+                    ON c_direct.id = cred.cardholder_id
+                LEFT JOIN ac_vehicles v 
+                    ON v.vehicle_id = cred.vehicle_id
+                LEFT JOIN ac_households h 
+                    ON h.household_id = v.household_id
+                LEFT JOIN ac_cardholders c_primary 
+                    ON c_primary.id = h.primary_cardholder_id
+        ";
 
-	return rest_ensure_response( ! empty( $results ) ? $results : array() );
-}
+        if ( $since > 0 ) {
+                $query = $wpdb->prepare(
+                        "SELECT " . $select_fields . "
+                         FROM " . $table . " vl
+                         " . $joins . "
+                         WHERE vl.vehicle_log_id > %d
+                         ORDER BY vl.vehicle_log_id ASC
+                         LIMIT 100",
+                        $since
+                );
+        } else {
+                $query = "SELECT " .$select_fields . "
+                          FROM " . $table . " vl
+                          " . $joins . "
+                          WHERE vl.event_timestamp >= (NOW() - INTERVAL 24 HOUR)
+                          ORDER BY vl.event_timestamp DESC
+                          LIMIT 200";
+        }
 
-add_action( 'wp_enqueue_scripts', 'fsbhoa_vehicle_enqueue_monitor_assets', 20 );
-function fsbhoa_vehicle_enqueue_monitor_assets() {
-    global $post;
-    if ( $post instanceof WP_Post && has_shortcode( $post->post_content, 'fsbhoa_live_monitor' ) ) {
-        wp_enqueue_script(
-            'fsbhoa-vehicle-monitor-js',
-            FSBHOA_AC_VEHICLE_URL . 'assets/js/fsbhoa-vehicle-monitor.js',
-            array( 'fsbhoa-live-monitor-script' ),
-            FSBHOA_AC_VEHICLE_VERSION,
-            true
-        );
-    }
+        $results = $wpdb->get_results( $query, ARRAY_A );
+
+        if ( ! empty( $wpdb->last_error ) ) {
+                return rest_ensure_response( array(
+                        'error'      => $wpdb->last_error,
+                        'last_query' => $wpdb->last_query,
+                ) );
+        }
+
+        return rest_ensure_response( ! empty( $results ) ? $results : array() );
 }
 
 
