@@ -13,9 +13,7 @@ type ServiceConfig struct {
 	DaemonHost         string `json:"daemon_host"`
 	DaemonPort         int    `json:"daemon_port"`
 	APIKey             string `json:"api_key"` // core's Access Verification API Key, sent as X-API-KEY
-	AllowedDaemonIPs   string `json:"allowed_daemon_ips"`
 	CorrelationWindow  int    `json:"correlation_window"`
-	ImageRetentionDays int    `json:"image_retention_days"`
 	EnableDebugLogging int    `json:"enable_debug_logging"`
 	WordPressHost      string `json:"wordpress_host"`
 
@@ -33,7 +31,6 @@ func LoadConfig(path string) (*ServiceConfig, error) {
 		DaemonHost:         "127.0.0.1",
 		DaemonPort:         8088,
 		CorrelationWindow:  15,
-		ImageRetentionDays: 90,
 		EnableDebugLogging: 0,
 		WordPressHost:      "127.0.0.1",
 		WatchDir:           "/home/pi/lpr_ftp_drop",

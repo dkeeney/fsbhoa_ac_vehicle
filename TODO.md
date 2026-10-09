@@ -54,8 +54,8 @@ Items 6, 9, 10 and 11 come down to one redesign: keep one in-progress event per 
   - Even on production, the request arrives from a non-local address and fails the default allowed-IP list (`127.0.0.1, ::1`).
   - Post to the local WordPress (`127.0.0.1` with the right `Host` header), and check `FSBHOA_AC_ENVIRONMENT` (fail closed), as `ARCHITECTURE.md` requires.
 - [ ] **16. Hard-coded drop folder.** `WatchDir` is fixed at `/home/pi/lpr_ftp_drop` (`config.go`). Make it a setting. The production mini-PC may not have a `pi` user.
-- [ ] **17. Unused settings.** `enable_debug_logging`, `image_retention_days` and `allowed_daemon_ips` are written to `vehicle_service.json`, but the service never reads them. Use them or remove them.
-- [ ] **18. Health check "uptime".** The `/health` handler returns the current Unix time as `uptime`. Return the seconds since start.
+- [x] **17. Unused settings.** `enable_debug_logging`, `image_retention_days` and `allowed_daemon_ips` are written to `vehicle_service.json`, but the service never reads them. Use them or remove them. Done: retention and the IP list are WordPress-only and no longer written to the JSON; the service uses `enable_debug_logging` for its per-input `[STATE]` lines.
+- [x] **18. Health check "uptime".** The `/health` handler returns the current Unix time as `uptime`. Return the seconds since start.
 - [x] **19. Repository hygiene.**
   - The compiled `vehicle_service/fsbhoa_vehicle` binary is committed. Remove it from git and add a `.gitignore`.
   - The `fsbhoa_vehicle.service` systemd unit is installed in `/etc/systemd/system` but isn't in the repo. Add it, along with install steps.
@@ -77,4 +77,4 @@ Items 6, 9, 10 and 11 come down to one redesign: keep one in-progress event per 
 
 ## Not yet built
 
-- [ ] **27. Image retention.** The `image_retention_days` setting exists, but nothing purges old images. Each event stores two image blobs in `ac_vehicle_log`. Add a daily WP-Cron job that sets `context_image_data` and `lpr_image_data` to NULL on rows older than the retention period.
+- [x] **27. Image retention.** The `image_retention_days` setting exists, but nothing purges old images. Each event stores two image blobs in `ac_vehicle_log`. Add a daily WP-Cron job that sets `context_image_data` and `lpr_image_data` to NULL on rows older than the retention period.

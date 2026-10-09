@@ -21,11 +21,15 @@ require_once FSBHOA_AC_VEHICLE_DIR . 'includes/class-fsbhoa-vehicle-settings.php
 require_once FSBHOA_AC_VEHICLE_DIR . 'includes/class-fsbhoa-vehicle-db.php';
 // Vehicle column and photo lightbox on core's live monitor (core monitor hooks)
 require_once FSBHOA_AC_VEHICLE_DIR . 'includes/views/view-monitor-vehicle-column.php';
+// Daily purge of old plate and scene photos
+require_once FSBHOA_AC_VEHICLE_DIR . 'includes/class-fsbhoa-vehicle-retention.php';
 
 /**
  * Initialize plugin components.
  */
 FSBHOA_Vehicle_Settings::get_instance();
+FSBHOA_Vehicle_Retention::init();
+register_deactivation_hook( __FILE__, array( 'FSBHOA_Vehicle_Retention', 'unschedule' ) );
 
 register_activation_hook( __FILE__, array( 'FSBHOA_Vehicle_DB', 'install' ) );
 // Also upgrade an already-active plugin's table when DB_VERSION changes

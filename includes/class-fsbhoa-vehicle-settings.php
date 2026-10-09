@@ -255,7 +255,7 @@ class FSBHOA_Vehicle_Settings {
 				 value="<?php echo esc_attr( $options['allowed_daemon_ips'] ); ?>" 
 				 class="regular-text code" />
 		<p class="description">
-			<?php esc_html_e( 'Comma-delimited IP addresses permitted to post raw event batches (e.g. 127.0.0.1, 10.0.10.5).', 'fsbhoa-ac-vehicle' ); ?>
+			<?php esc_html_e( 'Comma-delimited IP addresses allowed to post vehicle events to WordPress, in addition to the API key check (e.g. 127.0.0.1, ::1). Leave empty to allow any address that has the key.', 'fsbhoa-ac-vehicle' ); ?>
 		</p>
 		<?php
 	}
@@ -319,7 +319,7 @@ class FSBHOA_Vehicle_Settings {
 				 max="730" />
 		<span><?php esc_html_e( 'days', 'fsbhoa-ac-vehicle' ); ?></span>
 		<p class="description">
-			<?php esc_html_e( 'Retention schedule before purge cron cleans out binary plate/vehicle snapshot crops from storage.', 'fsbhoa-ac-vehicle' ); ?>
+			<?php esc_html_e( 'Plate and scene photos older than this are deleted every night at 03:05. The event rows (plate text, credential, time) are kept.', 'fsbhoa-ac-vehicle' ); ?>
 		</p>
 		<?php
 	}
@@ -333,7 +333,7 @@ class FSBHOA_Vehicle_Settings {
 				 name="<?php echo esc_attr( self::OPTION_NAME . '[enable_debug_logging]' ); ?>" 
 				 value="1" 
 				 <?php checked( 1, $options['enable_debug_logging'] ); ?> />
-			<?php esc_html_e( 'Enable verbose logging of correlation transitions and payload validation to debug.log', 'fsbhoa-ac-vehicle' ); ?>
+			<?php esc_html_e( 'Log every loop, DoorKing and camera input in the vehicle_service journal (journalctl -u fsbhoa_vehicle). Dispatched events, warnings and errors are always logged. Restart vehicle_service after changing this.', 'fsbhoa-ac-vehicle' ); ?>
 		</label>
 		<?php
 	}
@@ -406,9 +406,7 @@ class FSBHOA_Vehicle_Settings {
 			'daemon_host'          => sanitize_text_field( $options['daemon_host'] ?? '127.0.0.1' ),
 			'daemon_port'          => absint( $options['daemon_port'] ?? 8088 ),
 			'api_key'              => get_option( 'fsbhoa_ac_verify_api_key', '' ),
-			'allowed_daemon_ips'   => sanitize_text_field( $options['allowed_daemon_ips'] ?? '127.0.0.1, ::1' ),
 			'correlation_window'   => absint( $options['correlation_window'] ?? 15 ),
-			'image_retention_days' => absint( $options['image_retention_days'] ?? 90 ),
 			'enable_debug_logging' => ! empty( $options['enable_debug_logging'] ) ? 1 : 0,
 			'wordpress_host'       => sanitize_text_field( $wp_host ),
 		);

@@ -47,6 +47,17 @@ type GateStateManager struct {
 	plateRegex   *regexp.Regexp
 }
 
+// startTime is when the service started, for the health check's uptime
+var startTime = time.Now()
+
+// debugf logs per-input detail only when enable_debug_logging is on.
+// Dispatched events, warnings and errors always use log.Printf.
+func (gsm *GateStateManager) debugf(format string, args ...interface{}) {
+	if gsm.cfg.EnableDebugLogging != 0 {
+		log.Printf(format, args...)
+	}
+}
+
 func NewGateStateManager(cfg *ServiceConfig) *GateStateManager {
 	return &GateStateManager{
 		cfg:        cfg,
@@ -59,7 +70,7 @@ func (gsm *GateStateManager) HandleLoopTrigger(active bool) {
 	gsm.mu.Lock()
 	defer gsm.mu.Unlock()
 
-	log.Printf("[STATE] Loop Detector State Change: %v", active)
+	gsm.debugf("[STATE] Loop Detector State Change: %v", active)
 	if active {
 		gsm.ensureActiveEvent()
 		gsm.currentEvent.LoopActive = true
@@ -71,7 +82,7 @@ func (gsm *GateStateManager) HandleDoorKingEntry(device, code string) {
 	gsm.mu.Lock()
 	defer gsm.mu.Unlock()
 
-	log.Printf("[STATE] DoorKing Grant: Device=%s Code=%s", device, code)
+	gsm.debugf("[STATE] DoorKing Grant: Device=%s Code=%s", device, code)
 	gsm.ensureActiveEvent()
 	gsm.currentEvent.DoorKingDevice = device
 	gsm.currentEvent.DoorKingCode = code
@@ -89,7 +100,7 @@ func (gsm *GateStateManager) HandlePlateImage(fullPath string) {
 	}
 
 	plateStr := matches[2]
-	log.Printf("[STATE] Speco LPR Capture: Plate=%s (File: %s)", plateStr, filename)
+	gsm.debugf("[STATE] Speco LPR Capture: Plate=%s (File: %s)", plateStr, filename)
 
 	gsm.ensureActiveEvent()
 	gsm.currentEvent.LicensePlate = plateStr
@@ -284,7 +295,7 @@ func main() {
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"service": "vehicle_service",
 			"status":  "healthy",
-			"uptime":  time.Now().Unix(),
+			"uptime":  int64(time.Since(startTime).Seconds()),
 		})
 	}
 	mux.HandleFunc("/health", healthHandler)
