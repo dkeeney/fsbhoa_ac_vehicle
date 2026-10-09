@@ -15,16 +15,18 @@ Every service that calls WordPress should use the one **Access Verification API 
 
 Core must never reference an extension plugin (`fsbhoa_ac_core/other_docs/ARCHITECTURE.md`, "Core vs. extension plugins"). Core still holds vehicle pieces. Move each one into this plugin, and leave core with only a generic hook.
 
-- [ ] **3. Inject the vehicle column into the live monitor with a hook.** The "Vehicle Gate Traffic" column (`#vehicle-log-column`) and the `#fsbhoa-vehicle-modal` image viewer are hard-coded in core's `includes/monitor/views/view-live-monitor.php`.
+- [x] **3. Inject the vehicle column into the live monitor with a hook.** The "Vehicle Gate Traffic" column (`#vehicle-log-column`) and the `#fsbhoa-vehicle-modal` image viewer are hard-coded in core's `includes/monitor/views/view-live-monitor.php`.
   - In core, replace the vehicle markup with a generic hook in `#activity-log-section`, such as `do_action( 'fsbhoa_monitor_activity_columns' )`, placed before the pedestrian column so extensions can add columns on the left. Add a hook for overlays (such as `fsbhoa_monitor_modals`) at the end of the view, and list both in `ARCHITECTURE.md` under "UI injection".
   - In this plugin, hook both and render the column and modal from a view file here, such as `includes/views/view-monitor-vehicle-column.php`.
   - Tie `fsbhoa_vehicle_enqueue_monitor_assets()` (`fsbhoa_ac_vehicle.php`) to the same hook instead of guessing from the page slug or the shortcode, so the script loads only where the column is rendered.
   - Check the monitor with the vehicle plugin turned off. The pedestrian column should fill the row, and nothing should mention vehicles.
-- [ ] **4. Create `ac_vehicle_log` in this plugin.** Core creates it in `includes/class-fsbhoa-core-repository.php`, `db_schema.sql` and `migration.sql`.
+- [x] **4. Create `ac_vehicle_log` in this plugin.** Core creates it in `includes/class-fsbhoa-core-repository.php`, `db_schema.sql` and `migration.sql`.
   - Create the table in this plugin's activation hook, with `CREATE TABLE IF NOT EXISTS` so existing installs keep their data, and keep a schema SQL file in this repo.
   - Remove the table from core's repository and `db_schema.sql`. Leave the past `migration.sql` step alone, since production may already depend on it.
   - The core `CREATE TABLE` is broken right now: there's a missing comma after the `idx_circumvention` key, so it fails with a syntax error. Fix it in the moved copy.
-- [ ] **5. Check core for any other vehicle-log references.** Search core for `ac_vehicle_log`, `vehicle-event`, `vehicle-recent` and `fsbhoa-vehicle`. Core's own vehicle registry (`ac_vehicles`, `fsbhoa_core_vehicle_saved`) belongs to core and stays.
+  - Done. `includes/class-fsbhoa-vehicle-db.php` creates the table on activation and, through a schema version (`fsbhoa_vehicle_db_version`), on the first request after an update. It also adds `auth_type` and `idx_auth_lookup` to an older table that lacks them. `db_schema.sql` here is the reference copy.
+  - Core's `migration.sql` had the same missing comma in step 1, which would have stopped the production migration there. The table was removed from `migration.sql` too, since this plugin now creates it.
+- [x] **5. Check core for any other vehicle-log references.** Search core for `ac_vehicle_log`, `vehicle-event`, `vehicle-recent` and `fsbhoa-vehicle`. Core's own vehicle registry (`ac_vehicles`, `fsbhoa_core_vehicle_saved`) belongs to core and stays.
 
 ## Event correlation (`vehicle_service`)
 

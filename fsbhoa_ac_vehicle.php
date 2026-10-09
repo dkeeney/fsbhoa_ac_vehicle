@@ -17,42 +17,19 @@ define( 'FSBHOA_AC_VEHICLE_URL', plugin_dir_url( __FILE__ ) );
 
 // Load Settings Class
 require_once FSBHOA_AC_VEHICLE_DIR . 'includes/class-fsbhoa-vehicle-settings.php';
+// ac_vehicle_log table setup
+require_once FSBHOA_AC_VEHICLE_DIR . 'includes/class-fsbhoa-vehicle-db.php';
+// Vehicle column and photo lightbox on core's live monitor (core monitor hooks)
+require_once FSBHOA_AC_VEHICLE_DIR . 'includes/views/view-monitor-vehicle-column.php';
 
 /**
  * Initialize plugin components.
  */
 FSBHOA_Vehicle_Settings::get_instance();
 
-add_action( 'wp_enqueue_scripts', 'fsbhoa_vehicle_enqueue_monitor_assets', 30 );
-add_action( 'admin_enqueue_scripts', 'fsbhoa_vehicle_enqueue_monitor_assets', 30 );
-function fsbhoa_vehicle_enqueue_monitor_assets() {
-    global $post;
-
-    $load = false;
-    if ( is_admin() ) {
-        if ( isset( $_GET['page'] ) && strpos( sanitize_text_field( wp_unslash($_GET['page'] ) ), 'monitor' ) !== false ) {
-            $load = true;
-        }
-    } elseif ( $post instanceof WP_Post ) {
-        if ( has_shortcode( $post->post_content, 'fsbhoa_live_monitor' ) || strpos($post->post_content, 'fsbhoa_live_monitor' ) !== false ) {
-            $load = true;
-        }
-    }
-
-    if ( $load ) {
-        wp_enqueue_script(
-            'fsbhoa-vehicle-monitor-js',
-            FSBHOA_AC_VEHICLE_URL . 'assets/js/fsbhoa-vehicle-monitor.js',
-            array(), // No strict dependency handle
-            FSBHOA_AC_VEHICLE_VERSION . '.' . time(),
-            true
-        );
-        // The monitor routes require a logged-in admin; WordPress needs the nonce to recognize the user.
-        wp_localize_script( 'fsbhoa-vehicle-monitor-js', 'fsbhoa_vehicle_vars', array(
-            'nonce' => wp_create_nonce( 'wp_rest' ),
-        ) );
-    }
-}
+register_activation_hook( __FILE__, array( 'FSBHOA_Vehicle_DB', 'install' ) );
+// Also upgrade an already-active plugin's table when DB_VERSION changes
+add_action( 'plugins_loaded', array( 'FSBHOA_Vehicle_DB', 'maybe_upgrade' ) );
 
 
 /**

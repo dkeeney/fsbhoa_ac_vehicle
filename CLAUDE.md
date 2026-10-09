@@ -11,8 +11,8 @@ It combines three inputs:
 
 From these it builds a composite event that describes one vehicle entry. That event goes to the vehicle access log and to the real-time display.
 
-- **Vehicle access log.** This plugin runs its own log, the `ac_vehicle_log` table, separate from core's `ac_access_log`. `POST /vehicle-event` writes to it.
-- **Real-time display.** Vehicle events appear in the left column of core's live monitor ("Vehicle Gate Traffic"). `assets/js/fsbhoa-vehicle-monitor.js` polls `GET /vehicle-recent` every 3 seconds and fills that column.
+- **Vehicle access log.** This plugin runs its own log, the `ac_vehicle_log` table, separate from core's `ac_access_log`. `POST /vehicle-event` writes to it. The plugin creates and upgrades the table itself (`includes/class-fsbhoa-vehicle-db.php`); bump `DB_VERSION` when the schema changes.
+- **Real-time display.** Vehicle events appear in the left column of core's live monitor ("Vehicle Gate Traffic"). This plugin adds the column and the photo lightbox through core's `fsbhoa_monitor_activity_columns` and `fsbhoa_monitor_modals` hooks (`includes/views/view-monitor-vehicle-column.php`). `assets/js/fsbhoa-vehicle-monitor.js` polls `GET /vehicle-recent` every 3 seconds and fills the column.
 
 Plates read on the exit lanes are also logged, as vehicle exits from the community.
 
@@ -46,5 +46,4 @@ The plugin is partly built. Its parts are the WordPress plugin (`fsbhoa_ac_vehic
 - **Matching devices to gates and lanes.** `vehicle_service` keeps one in-progress event and doesn't know which gate (north or south) or lane (entrance or exit) an input came from. New settings in `class-fsbhoa-vehicle-settings.php` will map each device's IP address to its gate and lane, and the service must keep a separate event for each lane.
 - **Exit events.** Not designed yet. On an exit lane, the LPR camera is the only input (no loop sensor, no DoorKing).
 - **Camera input.** For each entry we want three things from the camera: a context photo of the vehicle taken when it leaves the loop, the plate photo, and the plate text from the LPR. The cameras are hard-wired IP cameras. The current FTP drop folder (`WatchDropDir` in `vehicle_service/main.go`) is a rough draft.
-- **Core still contains vehicle code.** This breaks the rule that core never references an extension. The "Vehicle Gate Traffic" column and the `fsbhoa-vehicle-modal` image viewer are hard-coded in core's `includes/monitor/views/view-live-monitor.php`, not added through a hook. Core also creates `ac_vehicle_log`, in `class-fsbhoa-core-repository.php`, `db_schema.sql` and `migration.sql`. Both should move into this plugin, behind a core monitor hook and the plugin's own table setup. See `TODO.md`, "Move vehicle code out of core".
 - **DoorKing live event feed.** The method isn't chosen yet. Plugins must be self-contained, relying only on core and never on another extension plugin. So the live feed may come straight to this plugin (`/webhook/doorking` in `vehicle_service`) rather than through `fsbhoa_ac_doorking`, which handles DoorKing configuration.
