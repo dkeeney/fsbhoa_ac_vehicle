@@ -32,10 +32,12 @@ Items 6, 9, 10 and 11 come down to one redesign: keep one in-progress event per 
 
 - [ ] **6. Busy traffic is merged into one event, which hides tailgating.** `ensureActiveEvent()` (`main.go`) restarts the correlation timer on every input. Cars less than `correlation_window` seconds apart never close the event, and each new plate or code overwrites the last. A tailgater is merged into the car ahead, which is the case the circumvention flag exists to catch. Overwritten plate images are never deleted from the drop folder.
 - [ ] **7. Cardholder lookup never matches.** `/vehicle-recent` joins `ac_credentials` on `auth_type` (such as `DK_WINDSHIELD` or `DK_ENTRY_CODE`), but `flushEvent()` never sends `auth_type`. Every row is stored with an empty type, so no cardholder is ever shown. The DoorKing feed must say whether the input was a windshield tag or a keypad PIN.
-- [ ] **8. Event times are wrong.**
+- [x] **8. Event times are wrong.**
   - `flushEvent()` doesn't send `Timestamp`, so `fsbhoa_ac_vehicle_ingest_event()` stamps the row when the post arrives, at least `correlation_window` seconds late. Send the time of the first input.
   - The stored time is UTC (`current_time( 'mysql', 1 )`). `fsbhoa-vehicle-monitor.js` shows it as local time, so it's 7–8 hours off.
   - The first-load "last 24 hours" filter in `fsbhoa_ac_vehicle_get_recent()` compares against the database's `NOW()`. Pick one time zone for `event_timestamp` and use it everywhere.
+  - Done: `event_timestamp` is local time (site time zone), like `ac_access_log`. The service sends the first input's time, and WordPress falls back to `current_time( 'mysql' )`.
+  - **Production deployment:** rows stored before this fix are in UTC. Convert them with `UPDATE ac_vehicle_log SET event_timestamp = created_at WHERE TIMESTAMPDIFF(MINUTE, created_at, event_timestamp) BETWEEN 6*60-5 AND 8*60+5;` (`created_at` holds the local insert time). The testbed has been converted.
 - [ ] **9. Events are lost when WordPress is unreachable.** `flushEvent()` deletes the images from the drop folder before posting, and a failed post isn't retried. Delete only after a 2xx, and queue or retry failed posts.
 - [ ] **10. The context photo is usually missed.** `HandlePlateImage()` looks for the `_src.jpg` scene image only when the plate image arrives. If the scene file lands later, it's never attached and never deleted. Files that don't match the pattern are never cleaned up either. (The camera interface is to be redesigned anyway; see `CLAUDE.md`.)
 - [ ] **11. The loop "off" state is ignored.** `HandleLoopTrigger(false)` does nothing. Leaving the loop is when the context photo should be taken and the entry event closed.
@@ -60,16 +62,16 @@ Items 6, 9, 10 and 11 come down to one redesign: keep one in-progress event per 
 ## Security
 
 - [ ] **20. The webhooks have no authentication.** `/webhook/loop` and `/webhook/doorking` accept any request, with any method. Anyone on the LAN can inject events. At a minimum, allow only the configured device IPs (see the device-mapping settings), and require the expected method.
-- [ ] **21. Database errors are shown to anyone.** On a database error, `fsbhoa_ac_vehicle_get_recent()` returns the error and `last_query` to the caller with HTTP 200, and the route is public (item 2). Log the details, and return a generic 500.
-- [ ] **22. The monitor builds cards from unescaped text.** `createCard()` in `fsbhoa-vehicle-monitor.js` puts `gate_identifier`, `auth_id`, the plate and `cardholder_name` into `innerHTML` without escaping. `sanitize_text_field` limits the risk, but the values come from unauthenticated webhooks. Escape them, or build the card with `textContent`.
+- [x] **21. Database errors are shown to anyone.** On a database error, `fsbhoa_ac_vehicle_get_recent()` returns the error and `last_query` to the caller with HTTP 200, and the route is public (item 2). Log the details, and return a generic 500.
+- [x] **22. The monitor builds cards from unescaped text.** `createCard()` in `fsbhoa-vehicle-monitor.js` puts `gate_identifier`, `auth_id`, the plate and `cardholder_name` into `innerHTML` without escaping. `sanitize_text_field` limits the risk, but the values come from unauthenticated webhooks. Escape them, or build the card with `textContent`.
 - [ ] **23. The config file is readable by everyone.** `write_config_from_array()` writes `vehicle_service.json` with default permissions, and it will hold the API key (item 1). Set the permissions to 0640, with the group the service runs as. Report a failed write to the admin instead of hiding it with `@`.
 
 ## Settings page and monitor
 
 - [x] **24. The settings page never shows the service status.** `render_settings_page()` calls `esc_html( $status_msg )` without `echo`, so the status label is always blank.
 - [x] **25. The monitor shows a literal `&x2022;`.** In `createCard()`, the bullet entity is missing its `#`: use `&#x2022;`.
-- [ ] **26. A blank modal when there's no context image.** `createCard()` opens the context image on click whenever there's a plate image, even if `has_context_img` is 0.
-- [ ] **28. The monitor shows duplicate cards.** `fsbhoa_ac_vehicle_get_recent()` joins `ac_credentials` on type and value, but a value can belong to more than one credential. On the testbed, 261 active `DK_ENTRY_CODE` values (shared household PINs) and 8 `DK_WINDSHIELD` values have more than one row. Each match returns its own row, so one vehicle event shows as several cards with different cardholders. Return one row per event: pick a single credential, or list all the matching names.
+- [x] **26. A blank modal when there's no context image.** `createCard()` opens the context image on click whenever there's a plate image, even if `has_context_img` is 0.
+- [x] **28. The monitor shows duplicate cards.** `fsbhoa_ac_vehicle_get_recent()` joins `ac_credentials` on type and value, but a value can belong to more than one credential. On the testbed, 261 active `DK_ENTRY_CODE` values (shared household PINs) and 8 `DK_WINDSHIELD` values have more than one row. Each match returns its own row, so one vehicle event shows as several cards with different cardholders. Return one row per event: pick a single credential, or list all the matching names.
 
 ## Not yet built
 

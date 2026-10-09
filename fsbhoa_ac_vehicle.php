@@ -134,7 +134,16 @@ function fsbhoa_ac_vehicle_ingest_event( WP_REST_Request $request ) {
 	$context_blob = ! empty( $params['context_image_b64'] ) ? base64_decode( $params['context_image_b64'] ) : null;
 	$lpr_blob     = ! empty( $params['lpr_image_b64'] ) ? base64_decode( $params['lpr_image_b64'] ) : null;
 
-	$timestamp = ! empty( $params['event_timestamp'] ) ? sanitize_text_field( $params['event_timestamp'] ) : current_time( 'mysql', 1 );
+	// event_timestamp is local time (site time zone), like core's ac_access_log.
+	$timestamp = current_time( 'mysql' );
+	if ( ! empty( $params['event_timestamp'] ) ) {
+		$sent = sanitize_text_field( $params['event_timestamp'] );
+		if ( preg_match( '/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(\.\d{1,6})?$/', $sent ) ) {
+			$timestamp = $sent;
+		} else {
+			error_log( 'FSBHOA Vehicle: ignoring malformed event_timestamp ' . $sent );
+		}
+	}
 
 	$confidence = isset( $params['lpr_confidence'] ) ? absint( $params['lpr_confidence'] ) : null;
 	$raw_details = ! empty( $params['raw_details'] ) ? wp_json_encode( $params['raw_details'] ) : null;
@@ -224,14 +233,30 @@ function fsbhoa_ac_vehicle_get_recent( WP_REST_Request $request ) {
                     NULLIF(TRIM(CONCAT(c_direct.first_name, ' ', c_direct.last_name)), ''),
                     NULLIF(TRIM(CONCAT(c_primary.first_name, ' ', c_primary.last_name)), ''),
                     ''
-                ) AS cardholder_name
+                ) AS cardholder_name,
+                (SELECT COUNT(*) FROM ac_credentials cnt
+                  WHERE cnt.credential_type = vl.auth_type
+                    AND cnt.credential_value = vl.auth_id
+                    AND cnt.status = 'active') AS credential_matches
         ";
 
+        // A credential value can belong to more than one credential (shared household PINs,
+        // reissued tags). Join only the best match so each event returns one row: an active
+        // credential of an active cardholder first, then the oldest.
         $joins = "
-                LEFT JOIN ac_credentials cred 
-                    ON cred.credential_type = vl.auth_type 
-                   AND cred.credential_value = vl.auth_id
-                LEFT JOIN ac_cardholders c_direct 
+                LEFT JOIN ac_credentials cred
+                    ON cred.id = (
+                        SELECT c2.id
+                          FROM ac_credentials c2
+                          LEFT JOIN ac_cardholders ch2 ON ch2.id = c2.cardholder_id
+                         WHERE c2.credential_type = vl.auth_type
+                           AND c2.credential_value = vl.auth_id
+                         ORDER BY (c2.status = 'active') DESC,
+                                  (ch2.cardholder_status = 'active') DESC,
+                                  c2.id ASC
+                         LIMIT 1
+                    )
+                LEFT JOIN ac_cardholders c_direct
                     ON c_direct.id = cred.cardholder_id
                 LEFT JOIN ac_vehicles v 
                     ON v.vehicle_id = cred.vehicle_id
@@ -263,10 +288,8 @@ function fsbhoa_ac_vehicle_get_recent( WP_REST_Request $request ) {
         $results = $wpdb->get_results( $query, ARRAY_A );
 
         if ( ! empty( $wpdb->last_error ) ) {
-                return rest_ensure_response( array(
-                        'error'      => $wpdb->last_error,
-                        'last_query' => $wpdb->last_query,
-                ) );
+                error_log( 'FSBHOA Vehicle: vehicle-recent query failed: ' . $wpdb->last_error . ' -- ' . $wpdb->last_query );
+                return new WP_Error( 'db_error', 'Could not load vehicle events', array( 'status' => 500 ) );
         }
 
         return rest_ensure_response( ! empty( $results ) ? $results : array() );

@@ -6,9 +6,33 @@
         let vehiclePlaceholder = document.getElementById('vehicle-log-placeholder');
         let lastKnownId = 0;
 
+        // Escape text from the server before it goes into innerHTML.
+        function esc(value) {
+           return String(value == null ? '' : value)
+               .replace(/&/g, '&amp;')
+               .replace(/</g, '&lt;')
+               .replace(/>/g, '&gt;')
+               .replace(/"/g, '&quot;')
+               .replace(/'/g, '&#39;');
+        }
+
+        function isTrue(value) {
+           return value == 1 || value === true;
+        }
+
+        // event_timestamp is local time "YYYY-MM-DD HH:MM:SS[.mmm]"; show it like the
+        // pedestrian log does ("3:07:42 PM").
+        function formatTime(timestamp) {
+           const m = /^\d{4}-\d{2}-\d{2} (\d{2}):(\d{2}):(\d{2})/.exec(timestamp || '');
+           if (!m) return '';
+           const hour = parseInt(m[1], 10);
+           return ((hour % 12) || 12) + ':' + m[2] + ':' + m[3] + ' ' + (hour < 12 ? 'AM' : 'PM');
+        }
+
         function createCard(event) {
            const li = document.createElement('li');
-           li.dataset.logId = event.vehicle_log_id;
+           const logId = parseInt(event.vehicle_log_id, 10);
+           li.dataset.logId = logId;
 
            const isCircumvention = parseInt(event.is_circumvention, 10) === 1;
            const borderStyle = isCircumvention
@@ -17,48 +41,66 @@
 
            const plate = event.lpr_plate_string || 'NO PLATE';
            const gate = event.gate_identifier || 'Vehicle Gate';
+           const authPrefixes = {
+               DK_WINDSHIELD: 'Tag ',
+               DK_ENTRY_CODE: 'Gate Code #',
+               DK_DIR_CODE: 'DIR: '
+           };
            const auth = event.auth_id
-               ? ('Auth: ' + event.auth_id)
+               ? ((authPrefixes[event.auth_type] || 'Auth: ') + event.auth_id)
                : (isCircumvention ? 'NO CREDENTIAL' : 'No PIN/Card');
-           const time = event.event_timestamp ? event.event_timestamp.split(' ')[1] : '';
+           const time = formatTime(event.event_timestamp);
 
-           const thumbUrl = '/wp-json/fsbhoa/v1/vehicle-image/' + event.vehicle_log_id + '?type=lpr';
-           const contextUrl = '/wp-json/fsbhoa/v1/vehicle-image/' + event.vehicle_log_id + '?type=context';
+           const lprUrl = '/wp-json/fsbhoa/v1/vehicle-image/' + logId + '?type=lpr';
+           const contextUrl = '/wp-json/fsbhoa/v1/vehicle-image/' + logId + '?type=context';
+           const hasLpr = isTrue(event.has_lpr_img);
+           const hasContext = isTrue(event.has_context_img);
 
            let warnBanner = '';
            if (isCircumvention) {
                warnBanner = '<div style="background: #fee2e2; color: #991b1b; padding: 2px 8px; border-radius: 4px; font-weight: bold; font-size: 11px; margin-top: 4px; display: inline-block;">&#9888; Gate Tripped Without Auth</div>';
            }
 
+           // Thumbnail is the plate crop when there is one; clicking opens the scene photo
+           // when there is one. With only one image, that image is used for both.
            let imgBox = '';
-           if (event.has_lpr_img == 1 || event.has_lpr_img === true) {
-               imgBox = '<div style="flex-shrink: 0; cursor: pointer; text-align: center;" onclick="openVehicleScene(\'' + contextUrl + '\')" title="Click to view full context scene">' +
-                  '<img src="' + thumbUrl + '" alt="' + plate + '" style="width: 80px; height: 50px; object-fit: cover; border-radius: 4px; border: 1px solid #cbd5e1; background: #e2e8f0;" onerror="this.style.display=\'none\';">' +
+           if (hasLpr || hasContext) {
+               const thumbUrl = hasLpr ? lprUrl : contextUrl;
+               const fullUrl = hasContext ? contextUrl : lprUrl;
+               imgBox = '<div style="flex-shrink: 0; cursor: pointer; text-align: center;" onclick="openVehicleScene(\'' + fullUrl + '\')" title="' + (hasContext ? 'Click to view full context scene' : 'Click to enlarge plate') + '">' +
+                  '<img src="' + thumbUrl + '" alt="' + esc(plate) + '" style="width: 80px; height: 50px; object-fit: cover; border-radius: 4px; border: 1px solid #cbd5e1; background: #e2e8f0;" onerror="this.style.display=\'none\';">' +
                  '<div style="font-size: 9px; color: #64748b; margin-top: 2px;">Expand</div>' +
                '</div>';
            }
+
+           // When a credential value belongs to more than one person (such as a shared
+           // household PIN), the server picks one; say how many others there are.
+           const otherMatches = (parseInt(event.credential_matches, 10) || 0) - 1;
+           const othersNote = otherMatches > 0
+               ? ' <span style="font-size: 11px; color: #64748b;" title="This credential belongs to more than one person">(+' + otherMatches + ' other' + (otherMatches > 1 ? 's' : '') + ')</span>'
+               : '';
 
            let cardholderHtml = '';
            const chId = parseInt(event.cardholder_id, 10);
            if (chId > 0) {
                cardholderHtml = '<div style="margin-top: 4px;">' +
                   '<a href="#" onclick="if(window.showCardholderSummaryModal){window.showCardholderSummaryModal(' + chId + ');} return false;" style="font-size: 13px; font-weight: 600; color: #1d4ed8; text-decoration: underline; cursor: pointer;">' +
-                  (event.cardholder_name || 'View Cardholder') +
-                  '</a>' +
+                  esc(event.cardholder_name || 'View Cardholder') +
+                  '</a>' + othersNote +
                '</div>';
            } else if (event.cardholder_name) {
-               cardholderHtml = '<div style="font-size: 12px; color: #64748b; margin-top: 4px;">' + event.cardholder_name + '</div>';
+               cardholderHtml = '<div style="font-size: 12px; color: #64748b; margin-top: 4px;">' + esc(event.cardholder_name) + othersNote + '</div>';
            }
 
            li.setAttribute('style', 'padding: 16px; display: flex; gap: 16px; align-items: flex-start; ' + borderStyle);
            li.innerHTML = imgBox +
                '<div style="flex: 1; min-width: 0;">' +
                   '<div style="display: flex; justify-content: space-between; align-items: baseline;">' +
-                    '<span style="font-size: 16px; font-weight: bold; font-family: monospace; background: #f1f5f9; padding: 2px 6px; border-radius: 4px; border: 1px solid #cbd5e1; color: #0f172a;">' + plate + '</span>' +
-                    '<time style="font-size: 12px; color: #64748b; font-family: monospace;">' + time + '</time>' +
+                    '<span style="font-size: 16px; font-weight: bold; font-family: monospace; background: #f1f5f9; padding: 2px 6px; border-radius: 4px; border: 1px solid #cbd5e1; color: #0f172a;">' + esc(plate) + '</span>' +
+                    '<time style="font-size: 12px; color: #64748b; font-family: monospace;">' + esc(time) + '</time>' +
                   '</div>' +
                   '<div style="font-size: 13px; color: #334155; margin-top: 4px; font-weight: 500;">' +
-                    gate + ' &#x2022; <span style="color: #64748b;">' + auth + '</span>' +
+                    esc(gate) + ' &#x2022; <span style="color: #64748b;">' + esc(auth) + '</span>' +
                   '</div>' +
                   cardholderHtml +
                   warnBanner +

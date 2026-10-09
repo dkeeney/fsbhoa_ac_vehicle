@@ -160,6 +160,8 @@ func (gsm *GateStateManager) flushEvent() {
 
 	// Build the exact payload schema expected by fsbhoa_ac_vehicle.php
 	payloadData := map[string]interface{}{
+		// Local time of the first input, matching ac_access_log (site time zone = system time zone)
+		"event_timestamp":   eventToShip.Timestamp.Local().Format("2006-01-02 15:04:05.000"),
 		"gate_identifier":   eventToShip.DoorKingDevice,
 		"auth_id":           eventToShip.DoorKingCode,
 		"lpr_plate":         eventToShip.LicensePlate,

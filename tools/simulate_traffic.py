@@ -2,7 +2,7 @@
 """Simulate vehicle gate traffic on the testbed so the live monitor has something to show.
 
 Each simulated car is one of: a windshield-tag entry, a keypad-PIN entry,
-a circumvention (loop tripped with no credential), or an entry with no plate read.
+a visitor let in through a directory code, a circumvention (loop tripped with no credential), or an entry with no plate read.
 Photos are copies of real Speco captures (plate + scene pairs) already in the
 FTP drop folder. Credentials are random active DoorKing credentials from the
 database.
@@ -57,7 +57,8 @@ PLATE_RE = re.compile(r'^(VEHICE_\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2}-\d+)_plate_
 # Scenario weights: (name, weight)
 SCENARIOS = [
     ('windshield', 70),
-    ('keypad', 15),
+    ('keypad', 10),
+    ('directory', 5),
     ('circumvention', 10),
     ('no_plate', 5),
 ]
@@ -110,12 +111,12 @@ def find_sample_pairs():
 
 
 def load_credentials():
-    """Return {'DK_WINDSHIELD': [...], 'DK_ENTRY_CODE': [...]} of active credential values."""
+    """Return {'DK_WINDSHIELD': [...], 'DK_ENTRY_CODE': [...], 'DK_DIR_CODE': [...]} of active credential values."""
     out = wp('db', 'query', '--skip-column-names',
              "SELECT credential_type, credential_value FROM ac_credentials "
-             "WHERE status = 'active' AND credential_type IN ('DK_WINDSHIELD', 'DK_ENTRY_CODE') "
-             "AND credential_value <> '' ORDER BY RAND() LIMIT 500")
-    creds = {'DK_WINDSHIELD': [], 'DK_ENTRY_CODE': []}
+             "WHERE status = 'active' AND credential_type IN ('DK_WINDSHIELD', 'DK_ENTRY_CODE', 'DK_DIR_CODE') "
+             "AND credential_value <> '' ORDER BY RAND() LIMIT 600")
+    creds = {'DK_WINDSHIELD': [], 'DK_ENTRY_CODE': [], 'DK_DIR_CODE': []}
     for line in out.splitlines():
         parts = line.split('\t')
         if len(parts) == 2 and parts[0] in creds:
@@ -142,6 +143,8 @@ def pick_car(pairs, creds):
         car['auth_type'], car['auth_id'] = 'DK_WINDSHIELD', random.choice(creds['DK_WINDSHIELD'])
     elif scenario == 'keypad':
         car['auth_type'], car['auth_id'] = 'DK_ENTRY_CODE', random.choice(creds['DK_ENTRY_CODE'])
+    elif scenario == 'directory':
+        car['auth_type'], car['auth_id'] = 'DK_DIR_CODE', random.choice(creds['DK_DIR_CODE'])
     elif scenario == 'no_plate':
         car['auth_type'], car['auth_id'] = 'DK_WINDSHIELD', random.choice(creds['DK_WINDSHIELD'])
         car['plate_path'] = car['src_path'] = car['plate'] = None
@@ -274,7 +277,7 @@ def main():
         interval = args.interval if args.interval is not None else 5
 
     log(f'{len(pairs)} photo pairs, {len(creds["DK_WINDSHIELD"])} windshield tags, '
-        f'{len(creds["DK_ENTRY_CODE"])} PINs. Sending via {args.via}, one car every {interval:g}s.')
+        f'{len(creds["DK_ENTRY_CODE"])} PINs, {len(creds["DK_DIR_CODE"])} directory codes. Sending via {args.via}, one car every {interval:g}s.')
 
     sent = 0
     try:
