@@ -40,7 +40,7 @@ Items 6, 9, 10 and 11 come down to one redesign: keep one in-progress event per 
 - [ ] **10. The context photo is usually missed.** `HandlePlateImage()` looks for the `_src.jpg` scene image only when the plate image arrives. If the scene file lands later, it's never attached and never deleted. Files that don't match the pattern are never cleaned up either. (The camera interface is to be redesigned anyway; see `CLAUDE.md`.)
 - [ ] **11. The loop "off" state is ignored.** `HandleLoopTrigger(false)` does nothing. Leaving the loop is when the context photo should be taken and the entry event closed.
 - [ ] **12. Plate confidence.** `lpr_confidence` is never filled in.
-- [ ] **13. Filename pattern.** `plateRegex` matches `VEHICE_…_plate_([A-Z0-9]+)\.jpg`. Check "VEHICE" against a real Speco file name (typo, or Speco's spelling?). The pattern drops plates containing a space, a dash or lowercase letters.
+- [ ] **13. Filename pattern.** `plateRegex` matches `VEHICE_…_plate_([A-Z0-9]+)\.jpg`. "VEHICE" is Speco's own spelling (confirmed from real captures in the testbed drop folder). The pattern drops plates containing a space, a dash or lowercase letters.
 
 ## Service setup and deployment
 
@@ -66,9 +66,10 @@ Items 6, 9, 10 and 11 come down to one redesign: keep one in-progress event per 
 
 ## Settings page and monitor
 
-- [ ] **24. The settings page never shows the service status.** `render_settings_page()` calls `esc_html( $status_msg )` without `echo`, so the status label is always blank.
-- [ ] **25. The monitor shows a literal `&x2022;`.** In `createCard()`, the bullet entity is missing its `#`: use `&#x2022;`.
+- [x] **24. The settings page never shows the service status.** `render_settings_page()` calls `esc_html( $status_msg )` without `echo`, so the status label is always blank.
+- [x] **25. The monitor shows a literal `&x2022;`.** In `createCard()`, the bullet entity is missing its `#`: use `&#x2022;`.
 - [ ] **26. A blank modal when there's no context image.** `createCard()` opens the context image on click whenever there's a plate image, even if `has_context_img` is 0.
+- [ ] **28. The monitor shows duplicate cards.** `fsbhoa_ac_vehicle_get_recent()` joins `ac_credentials` on type and value, but a value can belong to more than one credential. On the testbed, 261 active `DK_ENTRY_CODE` values (shared household PINs) and 8 `DK_WINDSHIELD` values have more than one row. Each match returns its own row, so one vehicle event shows as several cards with different cardholders. Return one row per event: pick a single credential, or list all the matching names.
 
 ## Not yet built
 

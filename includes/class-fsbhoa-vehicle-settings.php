@@ -372,7 +372,7 @@ class FSBHOA_Vehicle_Settings {
 				<p>
 					<strong><?php esc_html_e( 'vehicle_service Status:', 'fsbhoa-ac-vehicle' ); ?></strong>
 					<span style="color: <?php echo $daemon_live ? '#46b450' : '#dc3232'; ?>; font-weight: 600;">
-						<?php esc_html( $status_msg ); ?>
+						<?php echo esc_html( $status_msg ); ?>
 					</span>
 					<code>(<?php echo esc_html( $health_url ); ?>)</code>
 				</p>

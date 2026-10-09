@@ -58,7 +58,7 @@
                     '<time style="font-size: 12px; color: #64748b; font-family: monospace;">' + time + '</time>' +
                   '</div>' +
                   '<div style="font-size: 13px; color: #334155; margin-top: 4px; font-weight: 500;">' +
-                    gate + ' &x2022; <span style="color: #64748b;">' + auth + '</span>' +
+                    gate + ' &#x2022; <span style="color: #64748b;">' + auth + '</span>' +
                   '</div>' +
                   cardholderHtml +
                   warnBanner +
