@@ -40,6 +40,16 @@ This is allowed as long as it can't affect production (see "Environment separati
 - **LPR camera:** Speco O4BLP2M, one on each entrance lane and one on each exit lane. Only rear plates are captured.
 - **NVR:** Speco N64NR, also on our LAN.
 
+### Testbed workbench
+
+The workbench DoorKing setup is on the developer's home network (192.168.1.x), which reaches the testbed's LAN (192.168.42.x) over a VPN. The VPN only connects one way: the testbed (192.168.42.62) can't reach 192.168.1.x.
+
+- **RAM PC:** 192.168.1.41. Runs DoorKing's RAM software and the VPN, whose address is 192.168.70.3. RAM's Live Streaming output is pointed at the testbed.
+- **RS-232-to-LAN adapter:** connects RAM to the 1838 controller's serial port. Reported as 192.168.1.40 port 1040, but not confirmed. The `fsbhoa_ac_doorking` proxy config records 192.168.1.50:10001.
+- **Wiegand inputs on the 1838:**
+  - An old fob reader. The test fob is printed "603 186 06549", read as facility code 186, card number 06549. It is entered in RAM as device 06549.
+  - A Raspberry Pi 3B at 192.168.1.210 that simulates a Wiegand card reader. Its GPIO 17 and 27 (BCM numbering) drive the controller's L0 (green) and L1 (white) data lines through transistors. The script is `tools/wiegand_sim.py`; copy it to the Pi to run it. By default it sends facility code 0, card 10018; `--facility` and `--card` send any other 26-bit card.
+
 ## Design status
 
 The plugin is partly built. Its parts are the WordPress plugin (`fsbhoa_ac_vehicle.php`, settings in `includes/class-fsbhoa-vehicle-settings.php`) and the Go `vehicle_service`. Several pieces are still open:
