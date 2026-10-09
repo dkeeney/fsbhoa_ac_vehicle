@@ -53,7 +53,6 @@ class FSBHOA_Vehicle_Settings {
 		return array(
 			'daemon_host'          => '127.0.0.1',
 			'daemon_port'          => 8088,
-			'ingest_secret'        => '',
 			'allowed_daemon_ips'   => '127.0.0.1, ::1',
 			'correlation_window'   => 15,
 			'image_retention_days' => 90,
@@ -85,12 +84,11 @@ class FSBHOA_Vehicle_Settings {
 		);
 
 		add_settings_field(
-			'ingest_secret',
-			__( 'Shared Ingest Secret', 'fsbhoa-ac-vehicle' ),
-			array( $this, 'render_secret_field' ),
+			'api_key_status',
+			__( 'API Key', 'fsbhoa-ac-vehicle' ),
+			array( $this, 'render_api_key_status_field' ),
 			self::PAGE_SLUG,
-			'fsbhoa_vehicle_ingest_section',
-			array( 'label_for' => 'fsbhoa_vehicle_ingest_secret' )
+			'fsbhoa_vehicle_ingest_section'
 		);
 
 		add_settings_field(
@@ -179,12 +177,6 @@ class FSBHOA_Vehicle_Settings {
 			$sanitized['daemon_port'] = $defaults['daemon_port'];
 		}
 
-		if ( isset( $input['ingest_secret'] ) ) {
-			$sanitized['ingest_secret'] = sanitize_text_field( trim( $input['ingest_secret'] ) );
-		} else {
-			$sanitized['ingest_secret'] = '';
-		}
-
 		if ( isset( $input['allowed_daemon_ips'] ) ) {
 			$ips = explode( ',', sanitize_text_field( $input['allowed_daemon_ips'] ) );
 			$cleaned_ips = array();
@@ -215,13 +207,23 @@ class FSBHOA_Vehicle_Settings {
 
 		$sanitized['enable_debug_logging'] = ! empty( $input['enable_debug_logging'] ) ? 1 : 0;
 
-        $this->write_config_from_array($sanitized );
+        if ( ! $this->write_config_from_array( $sanitized ) ) {
+			add_settings_error(
+				self::OPTION_NAME,
+				'fsbhoa_vehicle_config_write_failed',
+				sprintf(
+					/* translators: %s: config file path */
+					__( 'Settings saved, but %s could not be written. vehicle_service will keep its old settings. See debug.log.', 'fsbhoa-ac-vehicle' ),
+					$this->vehicle_config_path
+				)
+			);
+		}
 
 		return $sanitized;
 	}
 
 	public function render_ingest_section_description() {
-		echo '<p>' . esc_html__( 'Configure authentication tokens and IP restrictions for correlated vehicle events pushed by vehicle_service into the WordPress REST API.', 'fsbhoa-ac-vehicle' ) . '</p>';
+		echo '<p>' . esc_html__( 'Authentication and IP restrictions for correlated vehicle events pushed by vehicle_service into the WordPress REST API.', 'fsbhoa-ac-vehicle' ) . '</p>';
 	}
 
 	public function render_daemon_section_description() {
@@ -232,17 +234,14 @@ class FSBHOA_Vehicle_Settings {
 		echo '<p>' . esc_html__( 'State machine timing thresholds and local LPR plate image retention policies.', 'fsbhoa-ac-vehicle' ) . '</p>';
 	}
 
-	public function render_secret_field() {
-		$options = self::get_options();
+	public function render_api_key_status_field() {
+		$has_key = '' !== get_option( 'fsbhoa_ac_verify_api_key', '' );
 		?>
-		<input type="password" 
-				 id="fsbhoa_vehicle_ingest_secret" 
-				 name="<?php echo esc_attr( self::OPTION_NAME . '[ingest_secret]' ); ?>" 
-				 value="<?php echo esc_attr( $options['ingest_secret'] ); ?>" 
-				 class="regular-text code" 
-				 autocomplete="new-password" />
+		<span style="color: <?php echo $has_key ? '#46b450' : '#dc3232'; ?>; font-weight: 600;">
+			<?php echo $has_key ? esc_html__( 'Set', 'fsbhoa-ac-vehicle' ) : esc_html__( 'Not set', 'fsbhoa-ac-vehicle' ); ?>
+		</span>
 		<p class="description">
-			<?php esc_html_e( 'Pre-shared bearer token configured in /var/lib/fsbhoa/vehicle_service.json sent in X-FSBHOA-Secret or Authorization header.', 'fsbhoa-ac-vehicle' ); ?>
+			<?php esc_html_e( 'vehicle_service sends the Access Verification API Key (FSBHOA AC General settings) as X-API-KEY. It is copied into vehicle_service.json when these settings or the core settings are saved; restart vehicle_service afterwards. Without a key, every vehicle event is refused.', 'fsbhoa-ac-vehicle' ); ?>
 		</p>
 		<?php
 	}
@@ -391,6 +390,10 @@ class FSBHOA_Vehicle_Settings {
 
     /**
 	 * Writes the JSON config file directly from an array of options.
+	 *
+	 * The file holds the API key, so it is written 0640 (owner www-data, group www-data;
+	 * the service runs as group www-data). Written to a temp file and renamed, so the
+	 * service never reads a half-written file. Returns false on failure.
 	 */
 	public function write_config_from_array( $options ) {
 		if ( empty( $this->vehicle_config_path ) ) {
@@ -402,7 +405,7 @@ class FSBHOA_Vehicle_Settings {
 		$config = array(
 			'daemon_host'          => sanitize_text_field( $options['daemon_host'] ?? '127.0.0.1' ),
 			'daemon_port'          => absint( $options['daemon_port'] ?? 8088 ),
-			'ingest_secret'        => sanitize_text_field( $options['ingest_secret'] ?? '' ),
+			'api_key'              => get_option( 'fsbhoa_ac_verify_api_key', '' ),
 			'allowed_daemon_ips'   => sanitize_text_field( $options['allowed_daemon_ips'] ?? '127.0.0.1, ::1' ),
 			'correlation_window'   => absint( $options['correlation_window'] ?? 15 ),
 			'image_retention_days' => absint( $options['image_retention_days'] ?? 90 ),
@@ -416,7 +419,20 @@ class FSBHOA_Vehicle_Settings {
 		if ( ! is_dir( $config_dir ) ) {
 			wp_mkdir_p( $config_dir );
 		}
-		@file_put_contents( $this->vehicle_config_path, $json_data );
+
+		$tmp_path = $this->vehicle_config_path . '.tmp';
+		if ( false === $json_data
+			|| false === file_put_contents( $tmp_path, $json_data )
+			|| ! chmod( $tmp_path, 0640 )
+			|| ! rename( $tmp_path, $this->vehicle_config_path ) ) {
+			$error = error_get_last();
+			error_log( 'FSBHOA Vehicle: failed to write ' . $this->vehicle_config_path . ': ' . ( $error['message'] ?? 'unknown error' ) );
+			if ( file_exists( $tmp_path ) ) {
+				unlink( $tmp_path );
+			}
+			return false;
+		}
+		return true;
 	}
 
 	/**

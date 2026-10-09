@@ -220,7 +220,7 @@ def send_via_wordpress(car, cfg):
         headers={
             'Content-Type': 'application/json',
             'Host': cfg.get('wordpress_host', '127.0.0.1'),
-            'X-FSBHOA-Secret': cfg.get('ingest_secret', ''),
+            'X-API-KEY': cfg.get('api_key', ''),
         },
     )
     try:

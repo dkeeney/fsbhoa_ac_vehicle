@@ -1,0 +1,24 @@
+[Unit]
+Description=FSBHOA Vehicle Access Control Gateway & Correlation Daemon
+After=network.target network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+Group=www-data
+WorkingDirectory=/var/lib/fsbhoa
+ExecStart=/usr/local/bin/fsbhoa_vehicle -config /var/lib/fsbhoa/vehicle_service.json
+Restart=always
+RestartSec=3s
+
+# Standard logging to journald
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=fsbhoa_vehicle
+
+# Security sandboxing
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target

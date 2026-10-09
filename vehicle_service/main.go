@@ -195,10 +195,7 @@ func (gsm *GateStateManager) flushEvent() {
 
 	req.Header.Set("Content-Type", "application/json")
 	req.Host = gsm.cfg.WordPressHost
-	if gsm.cfg.IngestSecret != "" {
-		req.Header.Set("Authorization", "Bearer "+gsm.cfg.IngestSecret)
-		req.Header.Set("X-FSBHOA-Secret", gsm.cfg.IngestSecret)
-	}
+	req.Header.Set("X-API-KEY", gsm.cfg.APIKey)
 
 	resp, err := client.Do(req)
 	if err != nil {

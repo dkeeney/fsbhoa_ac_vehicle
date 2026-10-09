@@ -1,0 +1,5 @@
+# Build output (rebuild.sh)
+vehicle_service/fsbhoa_vehicle
+
+# Python bytecode
+__pycache__/

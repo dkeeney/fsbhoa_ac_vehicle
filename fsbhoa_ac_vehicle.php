@@ -47,6 +47,10 @@ function fsbhoa_vehicle_enqueue_monitor_assets() {
             FSBHOA_AC_VEHICLE_VERSION . '.' . time(),
             true
         );
+        // The monitor routes require a logged-in admin; WordPress needs the nonce to recognize the user.
+        wp_localize_script( 'fsbhoa-vehicle-monitor-js', 'fsbhoa_vehicle_vars', array(
+            'nonce' => wp_create_nonce( 'wp_rest' ),
+        ) );
     }
 }
 
@@ -76,24 +80,36 @@ function fsbhoa_ac_vehicle_register_endpoints() {
 	register_rest_route( 'fsbhoa/v1', '/vehicle-image/(?P<id>\d+)', array(
 		'methods'           => 'GET',
 		'callback'         => 'fsbhoa_ac_vehicle_serve_image',
-		'permission_callback' => '__return_true',
+		'permission_callback' => 'fsbhoa_ac_vehicle_monitor_permission_check',
 	) );
 
 	// Endpoint 3: Poll recent events for UI
 	register_rest_route( 'fsbhoa/v1', '/vehicle-recent', array(
 		'methods'           => 'GET',
 		'callback'         => 'fsbhoa_ac_vehicle_get_recent',
-		'permission_callback' => '__return_true',
+		'permission_callback' => 'fsbhoa_ac_vehicle_monitor_permission_check',
 	) );
 }
 
 /**
- * Verify Ingestion Permissions (IP + Shared Secret)
+ * Verify Ingestion Permissions (Access Verification API Key + IP allow list)
+ *
+ * vehicle_service sends core's Access Verification API Key as X-API-KEY. Fails closed:
+ * a missing key, a wrong key or a missing core plugin all refuse the request.
  */
 function fsbhoa_ac_vehicle_verify_ingest_perms( WP_REST_Request $request ) {
-	$options = FSBHOA_Vehicle_Settings::get_options();
+	if ( ! class_exists( 'Fsbhoa_Verification_REST_API' ) ) {
+		error_log( 'FSBHOA Vehicle: core API key check unavailable; refusing vehicle-event.' );
+		return new WP_Error( 'rest_forbidden', 'API key check unavailable', array( 'status' => 403 ) );
+	}
 
-	// 1. IP Whitelist Validation
+	$key_check = Fsbhoa_Verification_REST_API::api_key_permission_check( $request );
+	if ( true !== $key_check ) {
+		return $key_check;
+	}
+
+	// Extra check: only the listed hosts may post (empty list allows any host with the key)
+	$options = FSBHOA_Vehicle_Settings::get_options();
 	if ( ! empty( $options['allowed_daemon_ips'] ) ) {
 		$allowed = array_map( 'trim', explode( ',', $options['allowed_daemon_ips'] ) );
 		$remote = ! empty( $_SERVER['REMOTE_ADDR'] ) ? $_SERVER['REMOTE_ADDR'] : '';
@@ -102,21 +118,15 @@ function fsbhoa_ac_vehicle_verify_ingest_perms( WP_REST_Request $request ) {
 		}
 	}
 
-	// 2. Shared Secret Validation
-	if ( ! empty( $options['ingest_secret'] ) ) {
-		$token = $request->get_header( 'x_fsbhoa_secret' );
-		if ( empty( $token ) ) {
-			$auth = $request->get_header( 'authorization' );
-			if ( $auth && preg_match( '/Bearer\s+(.+)/i', $auth, $m ) ) {
-				$token = $m[1];
-			}
-		}
-		if ( ! hash_equals( $options['ingest_secret'], (string) $token ) ) {
-			return new WP_Error( 'unauthorized', 'Invalid ingest secret', array( 'status' => 401 ) );
-		}
-	}
-
 	return true;
+}
+
+/**
+ * Monitor routes (event list and photos) are for logged-in admins, like core's monitor routes.
+ * The page sends X-WP-Nonce on fetch() calls and _wpnonce on image URLs.
+ */
+function fsbhoa_ac_vehicle_monitor_permission_check() {
+	return current_user_can( 'manage_options' );
 }
 
 /**
@@ -198,7 +208,7 @@ function fsbhoa_ac_vehicle_serve_image( WP_REST_Request $request ) {
 
 	header( 'Content-Type: image/jpeg' );
 	header( 'Content-Length: ' . strlen( $image_data ) );
-	header( 'Cache-Control: public, max-age=300' );
+	header( 'Cache-Control: private, max-age=300' ); // Admin-only photos: no shared caches
 	echo $image_data;
 	exit;
 }

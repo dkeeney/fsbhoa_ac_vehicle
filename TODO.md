@@ -4,12 +4,12 @@
 
 Every service that calls WordPress should use the one **Access Verification API Key** (core General settings, `fsbhoa_ac_verify_api_key`), sent as `X-API-KEY` (see `fsbhoa_ac_core/other_docs/ARCHITECTURE.md`, "REST authentication").
 
-- [ ] **1. Use the Access Verification API Key instead of the Shared Ingest Secret.** `POST /vehicle-event` is called only by the local vehicle service (`vehicle_service/main.go`), which sends `ingest_secret` in `X-FSBHOA-Secret` and `Authorization: Bearer`.
+- [x] **1. Use the Access Verification API Key instead of the Shared Ingest Secret.** `POST /vehicle-event` is called only by the local vehicle service (`vehicle_service/main.go`), which sends `ingest_secret` in `X-FSBHOA-Secret` and `Authorization: Bearer`.
   - `fsbhoa_ac_vehicle_verify_ingest_perms()` (`fsbhoa_ac_vehicle.php`) fails open: an empty secret skips the check, and an empty allowed-IP list skips that too.
   - Check the key with `Fsbhoa_Verification_REST_API::api_key_permission_check` (fails closed). Keep the allowed-IP list as an extra check.
   - Remove the "Shared Ingest Secret" setting (`class-fsbhoa-vehicle-settings.php`). `write_config_from_array()` should copy the core key into `vehicle_service.json`, so it's written automatically when settings are saved (`fsbhoa_update_service_configs`).
   - In `vehicle_service`, send `X-API-KEY` instead of the two current headers. Rebuild and restart the service afterwards.
-- [ ] **2. Two vehicle routes are open to anyone.** `GET /vehicle-image/{id}` (plate photos) and `GET /vehicle-recent` use `__return_true`. If only logged-in pages use them, require a logged-in user and send `X-WP-Nonce` from the page's JavaScript, like core's monitor routes.
+- [x] **2. Two vehicle routes are open to anyone.** `GET /vehicle-image/{id}` (plate photos) and `GET /vehicle-recent` use `__return_true`. If only logged-in pages use them, require a logged-in user and send `X-WP-Nonce` from the page's JavaScript, like core's monitor routes.
 
 ## Move vehicle code out of core
 
@@ -54,7 +54,7 @@ Items 6, 9, 10 and 11 come down to one redesign: keep one in-progress event per 
 - [ ] **16. Hard-coded drop folder.** `WatchDir` is fixed at `/home/pi/lpr_ftp_drop` (`config.go`). Make it a setting. The production mini-PC may not have a `pi` user.
 - [ ] **17. Unused settings.** `enable_debug_logging`, `image_retention_days` and `allowed_daemon_ips` are written to `vehicle_service.json`, but the service never reads them. Use them or remove them.
 - [ ] **18. Health check "uptime".** The `/health` handler returns the current Unix time as `uptime`. Return the seconds since start.
-- [ ] **19. Repository hygiene.**
+- [x] **19. Repository hygiene.**
   - The compiled `vehicle_service/fsbhoa_vehicle` binary is committed. Remove it from git and add a `.gitignore`.
   - The `fsbhoa_vehicle.service` systemd unit is installed in `/etc/systemd/system` but isn't in the repo. Add it, along with install steps.
   - `rebuild.sh` uses `$(pwd)`, so it works only when run from the repo root. Use the script's own directory.
@@ -64,7 +64,7 @@ Items 6, 9, 10 and 11 come down to one redesign: keep one in-progress event per 
 - [ ] **20. The webhooks have no authentication.** `/webhook/loop` and `/webhook/doorking` accept any request, with any method. Anyone on the LAN can inject events. At a minimum, allow only the configured device IPs (see the device-mapping settings), and require the expected method.
 - [x] **21. Database errors are shown to anyone.** On a database error, `fsbhoa_ac_vehicle_get_recent()` returns the error and `last_query` to the caller with HTTP 200, and the route is public (item 2). Log the details, and return a generic 500.
 - [x] **22. The monitor builds cards from unescaped text.** `createCard()` in `fsbhoa-vehicle-monitor.js` puts `gate_identifier`, `auth_id`, the plate and `cardholder_name` into `innerHTML` without escaping. `sanitize_text_field` limits the risk, but the values come from unauthenticated webhooks. Escape them, or build the card with `textContent`.
-- [ ] **23. The config file is readable by everyone.** `write_config_from_array()` writes `vehicle_service.json` with default permissions, and it will hold the API key (item 1). Set the permissions to 0640, with the group the service runs as. Report a failed write to the admin instead of hiding it with `@`.
+- [x] **23. The config file is readable by everyone.** `write_config_from_array()` writes `vehicle_service.json` with default permissions, and it will hold the API key (item 1). Set the permissions to 0640, with the group the service runs as. Report a failed write to the admin instead of hiding it with `@`.
 
 ## Settings page and monitor
 

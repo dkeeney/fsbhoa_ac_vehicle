@@ -4,6 +4,11 @@
         if (!vehicleEventList) return;
 
         let vehiclePlaceholder = document.getElementById('vehicle-log-placeholder');
+
+        // The vehicle routes require a logged-in admin. fetch() sends the nonce as a header;
+        // <img> can't, so image URLs carry it as _wpnonce.
+        const nonce = (window.fsbhoa_vehicle_vars && window.fsbhoa_vehicle_vars.nonce) || '';
+        const nonceParam = '&_wpnonce=' + encodeURIComponent(nonce);
         let lastKnownId = 0;
 
         // Escape text from the server before it goes into innerHTML.
@@ -51,8 +56,8 @@
                : (isCircumvention ? 'NO CREDENTIAL' : 'No PIN/Card');
            const time = formatTime(event.event_timestamp);
 
-           const lprUrl = '/wp-json/fsbhoa/v1/vehicle-image/' + logId + '?type=lpr';
-           const contextUrl = '/wp-json/fsbhoa/v1/vehicle-image/' + logId + '?type=context';
+           const lprUrl = '/wp-json/fsbhoa/v1/vehicle-image/' + logId + '?type=lpr' + nonceParam;
+           const contextUrl = '/wp-json/fsbhoa/v1/vehicle-image/' + logId + '?type=context' + nonceParam;
            const hasLpr = isTrue(event.has_lpr_img);
            const hasContext = isTrue(event.has_context_img);
 
@@ -129,7 +134,7 @@
                const url = lastKnownId > 0
                   ? ('/wp-json/fsbhoa/v1/vehicle-recent?since=' + lastKnownId)
                   : '/wp-json/fsbhoa/v1/vehicle-recent';
-               const resp = await fetch(url);
+               const resp = await fetch(url, { headers: { 'X-WP-Nonce': nonce } });
                if (!resp.ok) return;
                const events = await resp.json();
                if (Array.isArray(events) && events.length > 0) {
