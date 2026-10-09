@@ -40,7 +40,7 @@ Items 6, 9, 10 and 11 come down to one redesign: keep one in-progress event per 
   - The first-load "last 24 hours" filter in `fsbhoa_ac_vehicle_get_recent()` compares against the database's `NOW()`. Pick one time zone for `event_timestamp` and use it everywhere.
   - Done: `event_timestamp` is local time (site time zone), like `ac_access_log`. The service sends the first input's time, and WordPress falls back to `current_time( 'mysql' )`.
   - **Production deployment:** rows stored before this fix are in UTC. Convert them with `UPDATE ac_vehicle_log SET event_timestamp = created_at WHERE TIMESTAMPDIFF(MINUTE, created_at, event_timestamp) BETWEEN 6*60-5 AND 8*60+5;` (`created_at` holds the local insert time). The testbed has been converted.
-- [ ] **9. Events are lost when WordPress is unreachable.** `flushEvent()` deletes the images from the drop folder before posting, and a failed post isn't retried. Delete only after a 2xx, and queue or retry failed posts.
+- [x] **9. Events are lost when WordPress is unreachable.** `flushEvent()` deletes the images from the drop folder before posting, and a failed post isn't retried. Delete only after a 2xx, and queue or retry failed posts. Done: `vehicle_service/dispatcher.go` queues each event in `/var/lib/fsbhoa/vehicle_queue` (photos are deleted once it's queued), posts oldest first, retries every 30s, and deletes it after a 2xx. 400/409/422 go to `vehicle_queue/failed`. `event_uid` (unique in `ac_vehicle_log`) stops a retried post being stored twice.
 - [ ] **10. The context photo is usually missed.** `HandlePlateImage()` looks for the `_src.jpg` scene image only when the plate image arrives. If the scene file lands later, it's never attached and never deleted. Files that don't match the pattern are never cleaned up either. (The camera interface is to be redesigned anyway; see `CLAUDE.md`.)
 - [ ] **11. The loop "off" state is ignored.** `HandleLoopTrigger(false)` does nothing. Leaving the loop is when the context photo should be taken and the entry event closed.
 - [ ] **12. Plate confidence.** `lpr_confidence` is never filled in.
@@ -49,10 +49,10 @@ Items 6, 9, 10 and 11 come down to one redesign: keep one in-progress event per 
 ## Service setup and deployment
 
 - [ ] **14. The webhooks can't be reached from the LAN by default.** The service listens on `daemon_host` (default `127.0.0.1`), so the Shelly and DoorKing can't connect. The settings page also uses `daemon_host` as the health-check address. Split it into a listen address and a health-check address.
-- [ ] **15. The testbed can post to production.**
+- [x] **15. The testbed can post to production.**
   - `write_config_from_array()` takes `fsbhoa_ac_wp_host`, which falls back to `access.fsbhoa.com` when unset. `LoadConfig()` then builds `http://<host>/wp-json/...`, so a testbed with the option unset sends its events to production.
   - Even on production, the request arrives from a non-local address and fails the default allowed-IP list (`127.0.0.1, ::1`).
-  - Post to the local WordPress (`127.0.0.1` with the right `Host` header), and check `FSBHOA_AC_ENVIRONMENT` (fail closed), as `ARCHITECTURE.md` requires.
+  - Post to the local WordPress (`127.0.0.1` with the right `Host` header), and check `FSBHOA_AC_ENVIRONMENT` (fail closed), as `ARCHITECTURE.md` requires. Done: the service always posts to `127.0.0.1` with this site's own host (from `home_url()`) as the Host header, and sends nothing unless its `environment` is testbed or production. The dispatcher stamps the environment on each post, and `/vehicle-event` refuses it unless it matches this server's `FSBHOA_AC_ENVIRONMENT`.
 - [ ] **16. Hard-coded drop folder.** `WatchDir` is fixed at `/home/pi/lpr_ftp_drop` (`config.go`). Make it a setting. The production mini-PC may not have a `pi` user.
 - [x] **17. Unused settings.** `enable_debug_logging`, `image_retention_days` and `allowed_daemon_ips` are written to `vehicle_service.json`, but the service never reads them. Use them or remove them. Done: retention and the IP list are WordPress-only and no longer written to the JSON; the service uses `enable_debug_logging` for its per-input `[STATE]` lines.
 - [x] **18. Health check "uptime".** The `/health` handler returns the current Unix time as `uptime`. Return the seconds since start.

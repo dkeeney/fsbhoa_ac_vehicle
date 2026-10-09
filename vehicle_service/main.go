@@ -1,8 +1,6 @@
 package main
 
 import (
-	"bytes"
-	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
 	"flag"
@@ -42,6 +40,7 @@ type VehicleEvent struct {
 type GateStateManager struct {
 	mu           sync.Mutex
 	cfg          *ServiceConfig
+	dispatcher   *Dispatcher
 	currentEvent *VehicleEvent
 	expireTimer  *time.Timer
 	plateRegex   *regexp.Regexp
@@ -49,6 +48,9 @@ type GateStateManager struct {
 
 // startTime is when the service started, for the health check's uptime
 var startTime = time.Now()
+
+// hostname identifies this server in each event's raw_details
+var hostname, _ = os.Hostname()
 
 // debugf logs per-input detail only when enable_debug_logging is on.
 // Dispatched events, warnings and errors always use log.Printf.
@@ -58,9 +60,10 @@ func (gsm *GateStateManager) debugf(format string, args ...interface{}) {
 	}
 }
 
-func NewGateStateManager(cfg *ServiceConfig) *GateStateManager {
+func NewGateStateManager(cfg *ServiceConfig, dispatcher *Dispatcher) *GateStateManager {
 	return &GateStateManager{
 		cfg:        cfg,
+		dispatcher: dispatcher,
 		plateRegex: regexp.MustCompile(`VEHICE_(\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2}-\d+)_plate_([A-Z0-9]+)\.jpg$`),
 	}
 }
@@ -141,27 +144,10 @@ func (gsm *GateStateManager) flushEvent() {
 	log.Printf("[DISPATCH] Window closed. Correlating Event: Plate=%s, Auth=%s, Loop=%v",
 		eventToShip.LicensePlate, eventToShip.DoorKingCode, eventToShip.LoopActive)
 
-	// Read and base64-encode the plate crop
-	var plateB64 string
-	if eventToShip.PlateImageRel != "" {
-		if data, err := os.ReadFile(eventToShip.PlateImageRel); err == nil {
-			plateB64 = base64.StdEncoding.EncodeToString(data)
-			_ = os.Remove(eventToShip.PlateImageRel) // Clean up drop dir
-		} else {
-			log.Printf("[WARN] Failed reading plate image %s: %v", eventToShip.PlateImageRel, err)
-		}
-	}
-
-	// Read and base64-encode the full scene context image
-	var contextB64 string
-	if eventToShip.SceneImageRel != "" {
-		if data, err := os.ReadFile(eventToShip.SceneImageRel); err == nil {
-			contextB64 = base64.StdEncoding.EncodeToString(data)
-			_ = os.Remove(eventToShip.SceneImageRel) // Clean up drop dir
-		} else {
-			log.Printf("[WARN] Failed reading scene image %s: %v", eventToShip.SceneImageRel, err)
-		}
-	}
+	// Read and base64-encode the plate crop and the full scene context image. The files are
+	// deleted only after the event (which now holds them) is safely in the queue.
+	plateB64 := readImageB64(eventToShip.PlateImageRel, "plate")
+	contextB64 := readImageB64(eventToShip.SceneImageRel, "scene")
 
 	// Flag circumvention if loop tripped without any credential/auth
 	isCircumvention := 0
@@ -171,6 +157,8 @@ func (gsm *GateStateManager) flushEvent() {
 
 	// Build the exact payload schema expected by fsbhoa_ac_vehicle.php
 	payloadData := map[string]interface{}{
+		// Unique per event, so a retried post can't store the event twice
+		"event_uid": eventToShip.EventID,
 		// Local time of the first input, matching ac_access_log (site time zone = system time zone)
 		"event_timestamp":   eventToShip.Timestamp.Local().Format("2006-01-02 15:04:05.000"),
 		"gate_identifier":   eventToShip.DoorKingDevice,
@@ -182,6 +170,7 @@ func (gsm *GateStateManager) flushEvent() {
 		"raw_details": map[string]interface{}{
 			"event_id":    eventToShip.EventID,
 			"loop_active": eventToShip.LoopActive,
+			"source_host": hostname,
 		},
 	}
 
@@ -191,35 +180,29 @@ func (gsm *GateStateManager) flushEvent() {
 		return
 	}
 
-	client := &http.Client{
-		Timeout: 5 * time.Second,
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-		},
-	}
-
-	req, err := http.NewRequest("POST", gsm.cfg.WPWebhookURL, bytes.NewBuffer(payload))
-	if err != nil {
-		log.Printf("[ERROR] Request build failed: %v", err)
+	if err := gsm.dispatcher.Enqueue(eventToShip.EventID, payload); err != nil {
+		// Keep the image files so nothing is lost; they can be recovered by hand
+		log.Printf("[ERROR] Could not queue event %s: %v", eventToShip.EventID, err)
 		return
 	}
+	for _, path := range []string{eventToShip.PlateImageRel, eventToShip.SceneImageRel} {
+		if path != "" {
+			_ = os.Remove(path) // Clean up drop dir
+		}
+	}
+}
 
-	req.Header.Set("Content-Type", "application/json")
-	req.Host = gsm.cfg.WordPressHost
-	req.Header.Set("X-API-KEY", gsm.cfg.APIKey)
-
-	resp, err := client.Do(req)
+// readImageB64 returns the file's contents base64-encoded, or "" if there is no file.
+func readImageB64(path, label string) string {
+	if path == "" {
+		return ""
+	}
+	data, err := os.ReadFile(path)
 	if err != nil {
-		log.Printf("[ERROR] Failed to post event to WordPress: %v", err)
-		return
+		log.Printf("[WARN] Failed reading %s image %s: %v", label, path, err)
+		return ""
 	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode >= 300 {
-		log.Printf("[WARN] WordPress ingest returned HTTP %d", resp.StatusCode)
-	} else {
-		log.Printf("[DISPATCH] Successfully stored event to database via WordPress REST API")
-	}
+	return base64.StdEncoding.EncodeToString(data)
 }
 
 // WatchDropDir listens for new files delivered by the Speco camera via FTP
@@ -277,7 +260,17 @@ func main() {
 		log.Fatalf("[FATAL] Configuration load failed: %v", err)
 	}
 
-	gsm := NewGateStateManager(cfg)
+	if !validEnvironment(cfg.Environment) {
+		log.Printf("[CONFIG] WARNING: environment is %q; events will be queued but not sent until it is 'testbed' or 'production'.", cfg.Environment)
+	}
+
+	dispatcher, err := NewDispatcher(cfg)
+	if err != nil {
+		log.Fatalf("[FATAL] Event queue setup failed: %v", err)
+	}
+	go dispatcher.Run()
+
+	gsm := NewGateStateManager(cfg, dispatcher)
 
 	// Ensure drop directory exists before starting watcher
 	if err := os.MkdirAll(cfg.WatchDir, 0755); err != nil {
@@ -317,6 +310,6 @@ func main() {
 	})
 
 	listenAddr := fmt.Sprintf("%s:%d", cfg.DaemonHost, cfg.DaemonPort)
-	log.Printf("FSBHOA Vehicle Service listening on %s (Watch: %s)", listenAddr, cfg.WatchDir)
+	log.Printf("FSBHOA Vehicle Service listening on %s (Watch: %s, Queue: %s, Environment: %s)", listenAddr, cfg.WatchDir, cfg.QueueDir, cfg.Environment)
 	log.Fatal(http.ListenAndServe(listenAddr, mux))
 }

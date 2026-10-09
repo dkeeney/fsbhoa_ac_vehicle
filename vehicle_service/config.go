@@ -15,7 +15,9 @@ type ServiceConfig struct {
 	APIKey             string `json:"api_key"` // core's Access Verification API Key, sent as X-API-KEY
 	CorrelationWindow  int    `json:"correlation_window"`
 	EnableDebugLogging int    `json:"enable_debug_logging"`
-	WordPressHost      string `json:"wordpress_host"`
+	WordPressHost      string `json:"wordpress_host"` // this server's own site, sent as the Host header
+	Environment        string `json:"environment"`    // FSBHOA_AC_ENVIRONMENT: testbed or production
+	QueueDir           string `json:"queue_dir"`      // events waiting for WordPress
 
 	// Local runtime fields (not in JSON, populated via flags/defaults)
 	WatchDir       string        `json:"-"`
@@ -34,6 +36,7 @@ func LoadConfig(path string) (*ServiceConfig, error) {
 		EnableDebugLogging: 0,
 		WordPressHost:      "127.0.0.1",
 		WatchDir:           "/home/pi/lpr_ftp_drop",
+		QueueDir:           "/var/lib/fsbhoa/vehicle_queue",
 		ConfigPath:         path,
 	}
 
@@ -57,11 +60,13 @@ func LoadConfig(path string) (*ServiceConfig, error) {
 		cfg.WindowDuration = 15 * time.Second
 	}
 
-	// Construct webhook URL against local or remote WordPress
+	// WordPress always runs on this machine, so post to it locally. The Host header
+	// (wordpress_host) picks this server's own site. Never a remote host: the testbed
+	// must not be able to post to production.
 	if cfg.WordPressHost == "" {
 		cfg.WordPressHost = "127.0.0.1"
 	}
-	cfg.WPWebhookURL = fmt.Sprintf("http://%s/wp-json/fsbhoa/v1/vehicle-event", cfg.WordPressHost)
+	cfg.WPWebhookURL = "http://127.0.0.1/wp-json/fsbhoa/v1/vehicle-event"
 
 	if cfg.APIKey == "" {
 		log.Printf("[CONFIG] WARNING: api_key is empty; WordPress will refuse every vehicle event. Set the Access Verification API Key in core General settings and save.")

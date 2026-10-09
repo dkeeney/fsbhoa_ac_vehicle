@@ -11,6 +11,7 @@ It combines three inputs:
 
 From these it builds a composite event that describes one vehicle entry. That event goes to the vehicle access log and to the real-time display.
 
+- **Delivery.** `vehicle_service` posts each finished event to `POST /vehicle-event` on this machine through an on-disk queue (`/var/lib/fsbhoa/vehicle_queue`), so events survive WordPress being down. Events carry the environment and a unique `event_uid`; WordPress refuses the other environment's events and ignores repeats.
 - **Vehicle access log.** This plugin runs its own log, the `ac_vehicle_log` table, separate from core's `ac_access_log`. `POST /vehicle-event` writes to it. The plugin creates and upgrades the table itself (`includes/class-fsbhoa-vehicle-db.php`); bump `DB_VERSION` when the schema changes.
 - **Real-time display.** Vehicle events appear in the left column of core's live monitor ("Vehicle Gate Traffic"). This plugin adds the column and the photo lightbox through core's `fsbhoa_monitor_activity_columns` and `fsbhoa_monitor_modals` hooks (`includes/views/view-monitor-vehicle-column.php`). `assets/js/fsbhoa-vehicle-monitor.js` polls `GET /vehicle-recent` every 3 seconds and fills the column.
 

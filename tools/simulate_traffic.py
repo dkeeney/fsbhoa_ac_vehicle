@@ -203,6 +203,8 @@ def b64_file(path):
 
 def send_via_wordpress(car, cfg):
     payload = {
+        'event_uid': f'sim_{time.time_ns()}',
+        'environment': cfg.get('environment', ''),
         'gate_identifier': car['gate'],
         'auth_id': car['auth_id'],
         'auth_type': car['auth_type'],

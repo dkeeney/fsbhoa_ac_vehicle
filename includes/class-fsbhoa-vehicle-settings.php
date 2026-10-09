@@ -400,7 +400,10 @@ class FSBHOA_Vehicle_Settings {
 			$this->vehicle_config_path = '/var/lib/fsbhoa/vehicle_service.json';
 		}
 
-		$wp_host = get_option( 'fsbhoa_ac_wp_host', 'access.fsbhoa.com' );
+		// vehicle_service posts to WordPress on this machine (127.0.0.1); this site's own host
+		// name goes in the Host header. Never another server: the testbed must not post to production.
+		$wp_host     = wp_parse_url( home_url(), PHP_URL_HOST );
+		$environment = defined( 'FSBHOA_AC_ENVIRONMENT' ) ? FSBHOA_AC_ENVIRONMENT : '';
 
 		$config = array(
 			'daemon_host'          => sanitize_text_field( $options['daemon_host'] ?? '127.0.0.1' ),
@@ -408,7 +411,8 @@ class FSBHOA_Vehicle_Settings {
 			'api_key'              => get_option( 'fsbhoa_ac_verify_api_key', '' ),
 			'correlation_window'   => absint( $options['correlation_window'] ?? 15 ),
 			'enable_debug_logging' => ! empty( $options['enable_debug_logging'] ) ? 1 : 0,
-			'wordpress_host'       => sanitize_text_field( $wp_host ),
+			'wordpress_host'       => sanitize_text_field( $wp_host ? $wp_host : '127.0.0.1' ),
+			'environment'          => sanitize_text_field( $environment ),
 		);
 
 		$json_data = json_encode($config, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES );

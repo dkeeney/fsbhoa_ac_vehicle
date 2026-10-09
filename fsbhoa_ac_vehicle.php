@@ -122,6 +122,32 @@ function fsbhoa_ac_vehicle_ingest_event( WP_REST_Request $request ) {
 		return new WP_Error( 'invalid_json', 'No JSON payload supplied', array( 'status' => 400 ) );
 	}
 
+	// Fail closed: accept events only when this server's environment is known, and only
+	// from a sender in the same environment (the testbed must never write production's log).
+	$environment = defined( 'FSBHOA_AC_ENVIRONMENT' ) ? FSBHOA_AC_ENVIRONMENT : '';
+	if ( ! in_array( $environment, array( 'testbed', 'production' ), true ) ) {
+		error_log( 'FSBHOA Vehicle: refusing vehicle-event: FSBHOA_AC_ENVIRONMENT is not set to testbed or production.' );
+		return new WP_Error( 'environment_not_set', 'This server\'s environment is not configured', array( 'status' => 503 ) );
+	}
+	$sent_environment = sanitize_text_field( $params['environment'] ?? '' );
+	if ( $sent_environment !== $environment ) {
+		error_log( sprintf( 'FSBHOA Vehicle: refusing vehicle-event from environment "%s" on %s.', $sent_environment, $environment ) );
+		return new WP_Error( 'environment_mismatch', 'Event is from a different environment', array( 'status' => 409 ) );
+	}
+
+	// A retried post (the reply to the first one was lost) must not store the event twice
+	$event_uid = sanitize_text_field( $params['event_uid'] ?? '' );
+	if ( '' !== $event_uid ) {
+		$existing = $wpdb->get_var( $wpdb->prepare( "SELECT vehicle_log_id FROM {$table} WHERE event_uid = %s", $event_uid ) );
+		if ( $existing ) {
+			return rest_ensure_response( array(
+				'success'        => true,
+				'vehicle_log_id' => (int) $existing,
+				'duplicate'      => true,
+			) );
+		}
+	}
+
 	$context_blob = ! empty( $params['context_image_b64'] ) ? base64_decode( $params['context_image_b64'] ) : null;
 	$lpr_blob     = ! empty( $params['lpr_image_b64'] ) ? base64_decode( $params['lpr_image_b64'] ) : null;
 
@@ -150,9 +176,10 @@ function fsbhoa_ac_vehicle_ingest_event( WP_REST_Request $request ) {
 		'context_image_data' => $context_blob,
 		'lpr_image_data'     => $lpr_blob,
 		'raw_details'         => $raw_details,
+		'event_uid'          => '' !== $event_uid ? $event_uid : null,
 	);
 
-	$formats = array( '%s', '%s', '%s', '%s', '%s', '%d', '%d', '%s', '%s', '%s' );
+	$formats = array( '%s', '%s', '%s', '%s', '%s', '%d', '%d', '%s', '%s', '%s', '%s' );
 	$inserted = $wpdb->insert( $table, $data, $formats );
 
 	if ( false === $inserted ) {

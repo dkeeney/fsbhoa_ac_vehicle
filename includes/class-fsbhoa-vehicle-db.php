@@ -17,7 +17,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 class FSBHOA_Vehicle_DB {
 
 	const TABLE          = 'ac_vehicle_log';
-	const DB_VERSION     = '1';
+	const DB_VERSION     = '2';
 	const VERSION_OPTION = 'fsbhoa_vehicle_db_version';
 
 	/**
@@ -52,7 +52,9 @@ class FSBHOA_Vehicle_DB {
 			`lpr_image_data` mediumblob DEFAULT NULL,
 			`raw_details` json DEFAULT NULL COMMENT 'Timing delta, Shelly loop state transitions, daemon telemetry',
 			`created_at` datetime DEFAULT CURRENT_TIMESTAMP,
+			`event_uid` varchar(64) DEFAULT NULL COMMENT 'vehicle_service event ID; stops a retried post being stored twice',
 			PRIMARY KEY (`vehicle_log_id`),
+			UNIQUE KEY `uniq_event_uid` (`event_uid`),
 			KEY `idx_timestamp_gate` (`event_timestamp`, `gate_identifier`),
 			KEY `idx_lpr_plate` (`lpr_plate_string`),
 			KEY `idx_auth_id` (`auth_id`),
@@ -70,6 +72,14 @@ class FSBHOA_Vehicle_DB {
 		}
 		if ( ! $wpdb->get_var( "SHOW INDEX FROM `{$table}` WHERE Key_name = 'idx_auth_lookup'" ) ) {
 			$ok = self::alter( 'ADD KEY `idx_auth_lookup` (`auth_type`, `auth_id`)' ) && $ok;
+		}
+
+		// Version 2: event_uid
+		if ( ! $wpdb->get_var( "SHOW COLUMNS FROM `{$table}` LIKE 'event_uid'" ) ) {
+			$ok = self::alter( "ADD COLUMN `event_uid` varchar(64) DEFAULT NULL COMMENT 'vehicle_service event ID; stops a retried post being stored twice'" ) && $ok;
+		}
+		if ( ! $wpdb->get_var( "SHOW INDEX FROM `{$table}` WHERE Key_name = 'uniq_event_uid'" ) ) {
+			$ok = self::alter( 'ADD UNIQUE KEY `uniq_event_uid` (`event_uid`)' ) && $ok;
 		}
 
 		if ( $ok ) {
