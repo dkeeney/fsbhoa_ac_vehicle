@@ -45,10 +45,10 @@ This is allowed as long as it can't affect production (see "Environment separati
 The workbench DoorKing setup is on the developer's home network (192.168.1.x), which reaches the testbed's LAN (192.168.42.x) over a VPN. The VPN only connects one way: the testbed (192.168.42.62) can't reach 192.168.1.x.
 
 - **RAM PC:** 192.168.1.41. Runs DoorKing's RAM software and the VPN, whose address is 192.168.70.3. RAM's Live Streaming output is pointed at the testbed.
-- **RS-232-to-LAN adapter:** connects RAM to the 1838 controller's serial port. Reported as 192.168.1.40 port 1040, but not confirmed. The `fsbhoa_ac_doorking` proxy config records 192.168.1.50:10001.
+- **RS-232-to-LAN adapter:** connects RAM to the 1838 controller's serial port. 192.168.1.40 port 1040 (confirmed reachable from the RAM PC, 2026-10-09). The `fsbhoa_ac_doorking` proxy config still records an older 192.168.1.50:10001.
 - **Wiegand inputs on the 1838:**
   - An old fob reader. The test fob is printed "603 186 06549", read as facility code 186, card number 06549. It is entered in RAM as device 06549.
-  - A Raspberry Pi 3B at 192.168.1.210 that simulates a Wiegand card reader. Its GPIO 17 and 27 (BCM numbering) drive the controller's L0 (green) and L1 (white) data lines through transistors. The script is `tools/wiegand_sim.py`; copy it to the Pi to run it. By default it sends facility code 0, card 10018; `--facility` and `--card` send any other 26-bit card.
+  - A Raspberry Pi 3B at 192.168.1.210 that simulates a Wiegand card reader. Its GPIO 17 and 27 (BCM numbering) drive the controller's L0 (green) and L1 (white) data lines through transistors. The script is `tools/wiegand_sim.py`; copy it to the Pi to run it. By default it sends facility code 0, card 10018; `--facility` and `--card` send any other 26-bit card, and `--keys 1234#` simulates a Wiegand keypad (`--key-bits 4` or `8`).
 
 ## Design status
 
@@ -58,3 +58,30 @@ The plugin is partly built. Its parts are the WordPress plugin (`fsbhoa_ac_vehic
 - **Exit events.** Not designed yet. On an exit lane, the LPR camera is the only input (no loop sensor, no DoorKing).
 - **Camera input.** For each entry we want three things from the camera: a context photo of the vehicle taken when it leaves the loop, the plate photo, and the plate text from the LPR. The cameras are hard-wired IP cameras. The current FTP drop folder (`WatchDropDir` in `vehicle_service/main.go`) is a rough draft.
 - **DoorKing live event feed.** The method isn't chosen yet. Plugins must be self-contained, relying only on core and never on another extension plugin. So the live feed may come straight to this plugin (`/webhook/doorking` in `vehicle_service`) rather than through `fsbhoa_ac_doorking`, which handles DoorKing configuration.
+
+## RAM Live Streaming format (captured 2026-10-09)
+
+First captured from the workbench RAM. It covers only the record types seen so far: a granted card, and RAM's own connection status. Keypad codes, directory calls and denials are still to be captured. The raw capture is in `/home/pi/ram_stream.log`.
+
+- **Transport:** RAM connects to us over TCP and keeps the connection open for its whole session. It reconnects for a new session. It sends nothing else, and expects no reply. On the testbed, connections arrive from the VPN address 192.168.70.3, not the RAM PC's own 192.168.1.41.
+- **Framing:** each record is 162 bytes: CR LF, 158 characters of fixed-width ASCII padded with spaces, then CR LF. Split on CR LF and skip empty lines.
+- **Columns** (0-based offsets into the 158 characters):
+
+  | Offset | Field | Examples |
+  |---|---|---|
+  | 0–22 | RAM account name | `WORKBENCH`, `SOUTH GATES NEW` |
+  | 23–34 | Date, MM/DD/YY | `10/09/26` |
+  | 35–43 | Time, h:mmAM/PM | `4:22PM` |
+  | 44–56 | Record type | `Cards`, `Network`, `RS232` |
+  | 57–64 | Device number | `06549` |
+  | 65–82 | Name on the device, from RAM | `& SHUT, OPEN` |
+  | 83–90 | Result | `Admit` |
+  | 91– | Relay | `Relay 2` |
+
+  RAM's status records (`Network`, `RS232`) put a message at offset 65 instead, such as `Connection`, `Download Data` or `Failed To Connect`.
+- **What this means for the design:**
+  - The account name identifies the gate, so production's RAM account names are what map events to the north and south gates.
+  - The time has whole minutes only. Correlation must use the time the record arrives, not the time in it.
+  - A card record shows the device number but not the facility code.
+  - Access Control identifies the person by the device number (a windshield tag) or the gate code (entered at a keypad). The record type says which of the two it is.
+  - The name field is short (about 15 characters). It will eventually hold the household name, truncated, filled in from Access Control. It is only for debugging; never use it to identify anyone.
