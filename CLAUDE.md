@@ -119,7 +119,7 @@ Added to what `vehicle_service` sends: `auth_type` (TODO item 7), `direction`, a
 
 ### Build order
 
-0. **Record real traffic.** Before writing the correlation, `vehicle_service` records every raw input (DoorKing records, loop on and off, plates) with its arrival time to a journal, one JSON line per input, without correlating anything. Run it against a real gate to check the scenario table, and keep the recordings: the correlation code is then tested by replaying them, and again whenever the rules change. This needs:
+0. **Record real traffic.** *Built 2026-10-10:* the RAM listener (`vehicle_service/ram.go`), the journal (`journal.go`), loop off, and the "RAM Stream Sources" and "Device Sources" settings (stand-ins for the Gates table). The journal is `/var/lib/fsbhoa/vehicle_journal/journal-YYYY-MM-DD.jsonl`, kept 30 days; entry kinds are `ram_record`, `ram_repeat` (a collapsed flood), `ram_connect`, `ram_disconnect`, `ram_refused`, `loop`, `loop_invalid`, `plate` and `webhook_refused`. DoorKing records are journaled only; they don't feed the old single-event correlator. Not built yet: overview snapshots (needs the cameras' snapshot URL and login). Before writing the correlation, `vehicle_service` records every raw input (DoorKing records, loop on and off, plates) with its arrival time to a journal, one JSON line per input, without correlating anything. Run it against a real gate to check the scenario table, and keep the recordings: the correlation code is then tested by replaying them, and again whenever the rules change. This needs:
    - **The loop signal at a real gate.** A new cable from the loop detector to a Shelly. Take it from a spare output on the arm's loop detector (many detectors have a second relay) as a dry contact. Never connect to the loop wire itself: that would change what the arm's detector sees and could affect the gate.
    - **The live stream from the production RAM.** The office RAM doesn't stream today, so pointing its Live Streaming output at the testbed for the study affects no one (the user's decision, 2026-10-10). RAM probably streams to only one address, so it moves to the production server when production's own `vehicle_service` needs it.
    - **Overview camera snapshots** at both loop on and loop off, to choose which moment gives the better context photo.
@@ -134,7 +134,7 @@ Added to what `vehicle_service` sends: `auth_type` (TODO item 7), `direction`, a
 First captured from the workbench RAM. It covers only the record types seen so far: a granted card, and RAM's own connection status. Keypad codes, directory calls and denials are still to be captured. The raw capture is in `/home/pi/ram_stream.log`.
 
 - **Transport:** RAM connects to us over TCP and keeps the connection open for its whole session. It reconnects for a new session. It sends nothing else, and expects no reply. Streaming works whether or not RAM's Live Transaction dialog is open. On the testbed, connections arrive from the VPN address 192.168.70.3, not the RAM PC's own 192.168.1.41.
-- **Framing:** each record is 162 bytes: CR LF, 158 characters of fixed-width ASCII padded with spaces, then CR LF. Split on CR LF and skip empty lines.
+- **Framing:** each record is CR LF, fixed-width ASCII padded with spaces (usually 158 characters; a long status message made one 162), then CR LF. Split on CR LF and skip empty lines.
 - **Columns** (0-based offsets into the 158 characters):
 
   | Offset | Field | Examples |

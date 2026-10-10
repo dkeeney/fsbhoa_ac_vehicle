@@ -19,6 +19,14 @@ type ServiceConfig struct {
 	Environment        string `json:"environment"`    // FSBHOA_AC_ENVIRONMENT: testbed or production
 	QueueDir           string `json:"queue_dir"`      // events waiting for WordPress
 
+	// Traffic study (CLAUDE.md, "Build order", step 0). The address lists stand in for the
+	// per-lane Gates settings until those exist. This machine is always allowed.
+	RAMPort       int      `json:"ram_port"`       // DoorKing RAM Live Streaming listener
+	RAMSources    []string `json:"ram_sources"`    // addresses RAM may stream from
+	DeviceSources []string `json:"device_sources"` // addresses allowed to call the webhooks (Shellys, cameras)
+	JournalDir    string   `json:"journal_dir"`    // raw-input journal, one file per day
+	JournalDays   int      `json:"journal_days"`   // journal files kept this many days
+
 	// Local runtime fields (not in JSON, populated via flags/defaults)
 	WatchDir       string        `json:"-"`
 	ConfigPath     string        `json:"-"`
@@ -37,6 +45,9 @@ func LoadConfig(path string) (*ServiceConfig, error) {
 		WordPressHost:      "127.0.0.1",
 		WatchDir:           "/home/pi/lpr_ftp_drop",
 		QueueDir:           "/var/lib/fsbhoa/vehicle_queue",
+		RAMPort:            8089,
+		JournalDir:         "/var/lib/fsbhoa/vehicle_journal",
+		JournalDays:        30,
 		ConfigPath:         path,
 	}
 
@@ -67,6 +78,13 @@ func LoadConfig(path string) (*ServiceConfig, error) {
 		cfg.WordPressHost = "127.0.0.1"
 	}
 	cfg.WPWebhookURL = "http://127.0.0.1/wp-json/fsbhoa/v1/vehicle-event"
+
+	if cfg.RAMPort <= 0 || cfg.RAMPort > 65535 {
+		cfg.RAMPort = 8089
+	}
+	if cfg.JournalDays <= 0 {
+		cfg.JournalDays = 30
+	}
 
 	if cfg.APIKey == "" {
 		log.Printf("[CONFIG] WARNING: api_key is empty; WordPress will refuse every vehicle event. Set the Access Verification API Key in core General settings and save.")

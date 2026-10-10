@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"sync"
 	"time"
 
@@ -41,6 +42,7 @@ type GateStateManager struct {
 	mu           sync.Mutex
 	cfg          *ServiceConfig
 	dispatcher   *Dispatcher
+	journal      *Journal
 	currentEvent *VehicleEvent
 	expireTimer  *time.Timer
 	plateRegex   *regexp.Regexp
@@ -60,10 +62,11 @@ func (gsm *GateStateManager) debugf(format string, args ...interface{}) {
 	}
 }
 
-func NewGateStateManager(cfg *ServiceConfig, dispatcher *Dispatcher) *GateStateManager {
+func NewGateStateManager(cfg *ServiceConfig, dispatcher *Dispatcher, journal *Journal) *GateStateManager {
 	return &GateStateManager{
 		cfg:        cfg,
 		dispatcher: dispatcher,
+		journal:    journal,
 		plateRegex: regexp.MustCompile(`VEHICE_(\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2}-\d+)_plate_([A-Z0-9]+)\.jpg$`),
 	}
 }
@@ -105,13 +108,22 @@ func (gsm *GateStateManager) HandlePlateImage(fullPath string) {
 	plateStr := matches[2]
 	gsm.debugf("[STATE] Speco LPR Capture: Plate=%s (File: %s)", plateStr, filename)
 
+	// Journal the read before anything else; the scene file is the plate file's _src partner
+	sceneFile := gsm.plateRegex.ReplaceAllString(fullPath, "VEHICE_${1}_src.jpg")
+	_, sceneErr := os.Stat(sceneFile)
+	entry := map[string]interface{}{
+		"plate": plateStr, "file": fullPath, "camera_time": matches[1], "scene_found": sceneErr == nil,
+	}
+	if fi, err := os.Stat(fullPath); err == nil {
+		entry["size"] = fi.Size()
+	}
+	gsm.journal.Write("plate", entry)
+
 	gsm.ensureActiveEvent()
 	gsm.currentEvent.LicensePlate = plateStr
 	gsm.currentEvent.PlateImageRel = fullPath
 
-	// Infer scene file path
-	sceneFile := gsm.plateRegex.ReplaceAllString(fullPath, "VEHICE_${1}_src.jpg")
-	if _, err := os.Stat(sceneFile); err == nil {
+	if sceneErr == nil {
 		gsm.currentEvent.SceneImageRel = sceneFile
 	}
 }
@@ -270,7 +282,17 @@ func main() {
 	}
 	go dispatcher.Run()
 
-	gsm := NewGateStateManager(cfg, dispatcher)
+	journal, err := NewJournal(cfg.JournalDir, cfg.JournalDays)
+	if err != nil {
+		log.Fatalf("[FATAL] Journal setup failed: %v", err)
+	}
+
+	gsm := NewGateStateManager(cfg, dispatcher, journal)
+
+	// DoorKing RAM Live Streaming. Journaled only for now (traffic study); it doesn't feed
+	// the correlator until per-lane correlation is built.
+	ram := &RAMListener{port: cfg.RAMPort, sources: NewSources(cfg.RAMSources), journal: journal, debugf: gsm.debugf}
+	go ram.Run()
 
 	// Ensure drop directory exists before starting watcher
 	if err := os.MkdirAll(cfg.WatchDir, 0755); err != nil {
@@ -280,36 +302,76 @@ func main() {
 	// Start drop directory watcher
 	go gsm.WatchDropDir()
 
+	devices := NewSources(cfg.DeviceSources)
+	if len(devices) == 0 {
+		log.Printf("[CONFIG] WARNING: no device sources configured; only this machine may call the webhooks")
+	}
+
+	// fromDevice refuses webhook calls from anywhere but a configured device or this machine.
+	fromDevice := func(next http.HandlerFunc) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			if !devices.Allowed(r.RemoteAddr) {
+				ip, _ := remoteAddr(r.RemoteAddr)
+				log.Printf("[WARN] Refused %s from %s: not a configured device", r.URL.Path, r.RemoteAddr)
+				journal.Write("webhook_refused", map[string]interface{}{"remote": ip.String(), "path": r.URL.Path, "query": r.URL.RawQuery})
+				http.Error(w, "forbidden", http.StatusForbidden)
+				return
+			}
+			next(w, r)
+		}
+	}
+
 	mux := http.NewServeMux()
 
-	// WordPress health probe endpoint
+	// WordPress health probe endpoint (this machine only)
 	healthHandler := func(w http.ResponseWriter, r *http.Request) {
+		if addr, ok := remoteAddr(r.RemoteAddr); !ok || !addr.IsLoopback() {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{
-			"service": "vehicle_service",
-			"status":  "healthy",
-			"uptime":  int64(time.Since(startTime).Seconds()),
+			"service":         "vehicle_service",
+			"status":          "healthy",
+			"uptime":          int64(time.Since(startTime).Seconds()),
+			"ram_connections": ram.active.Load(),
+			"last_seen":       journal.LastSeen(), // newest journal entry of each kind
 		})
 	}
 	mux.HandleFunc("/health", healthHandler)
 	mux.HandleFunc("/status", healthHandler)
 
-	// Shelly Pro 1 Loop Detector Webhook
-	mux.HandleFunc("/webhook/loop", func(w http.ResponseWriter, r *http.Request) {
-		state := r.URL.Query().Get("state") == "on" || r.URL.Query().Get("state") == "1"
-		gsm.HandleLoopTrigger(state)
+	// Shelly Pro 1 Loop Detector Webhook: ?state=on|off (also 1|0, true|false)
+	mux.HandleFunc("/webhook/loop", fromDevice(func(w http.ResponseWriter, r *http.Request) {
+		ip, _ := remoteAddr(r.RemoteAddr)
+		raw := r.URL.Query().Get("state")
+		var on bool
+		switch strings.ToLower(raw) {
+		case "on", "1", "true":
+			on = true
+		case "off", "0", "false":
+			on = false
+		default:
+			journal.Write("loop_invalid", map[string]interface{}{"remote": ip.String(), "query": r.URL.RawQuery})
+			http.Error(w, "state must be on or off", http.StatusBadRequest)
+			return
+		}
+		journal.Write("loop", map[string]interface{}{"remote": ip.String(), "on": on})
+		gsm.HandleLoopTrigger(on)
 		w.WriteHeader(http.StatusOK)
-	})
+	}))
 
-	// DoorKing Event Receiver
-	mux.HandleFunc("/webhook/doorking", func(w http.ResponseWriter, r *http.Request) {
+	// DoorKing Event Receiver (simulator; the real feed is the RAM listener)
+	mux.HandleFunc("/webhook/doorking", fromDevice(func(w http.ResponseWriter, r *http.Request) {
 		device := r.URL.Query().Get("device")
 		code := r.URL.Query().Get("code")
 		gsm.HandleDoorKingEntry(device, code)
 		w.WriteHeader(http.StatusOK)
-	})
+	}))
 
-	listenAddr := fmt.Sprintf("%s:%d", cfg.DaemonHost, cfg.DaemonPort)
-	log.Printf("FSBHOA Vehicle Service listening on %s (Watch: %s, Queue: %s, Environment: %s)", listenAddr, cfg.WatchDir, cfg.QueueDir, cfg.Environment)
+	// All interfaces: the Shellys (and cameras) at the gates call in over the LAN. The
+	// webhooks accept only configured devices, and /health only this machine.
+	listenAddr := fmt.Sprintf(":%d", cfg.DaemonPort)
+	log.Printf("FSBHOA Vehicle Service listening on %s (Watch: %s, Queue: %s, Journal: %s, Environment: %s)", listenAddr, cfg.WatchDir, cfg.QueueDir, cfg.JournalDir, cfg.Environment)
 	log.Fatal(http.ListenAndServe(listenAddr, mux))
 }

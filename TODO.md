@@ -48,7 +48,7 @@ Items 6, 9, 10 and 11 come down to one redesign: keep one in-progress event per 
 
 ## Service setup and deployment
 
-- [ ] **14. The webhooks can't be reached from the LAN by default.** The service listens on `daemon_host` (default `127.0.0.1`), so the Shelly and DoorKing can't connect. The settings page also uses `daemon_host` as the health-check address. Split it into a listen address and a health-check address.
+- [x] **14. The webhooks can't be reached from the LAN by default.** The service listens on `daemon_host` (default `127.0.0.1`), so the Shelly and DoorKing can't connect. The settings page also uses `daemon_host` as the health-check address. Split it into a listen address and a health-check address. Done: the service listens on all interfaces (webhooks on `daemon_port`, DoorKing RAM stream on 8089); `daemon_host` is now only the address the settings page checks health at, and `/health` answers only this machine.
 - [x] **15. The testbed can post to production.**
   - `write_config_from_array()` takes `fsbhoa_ac_wp_host`, which falls back to `access.fsbhoa.com` when unset. `LoadConfig()` then builds `http://<host>/wp-json/...`, so a testbed with the option unset sends its events to production.
   - Even on production, the request arrives from a non-local address and fails the default allowed-IP list (`127.0.0.1, ::1`).
@@ -63,7 +63,7 @@ Items 6, 9, 10 and 11 come down to one redesign: keep one in-progress event per 
 
 ## Security
 
-- [ ] **20. The webhooks have no authentication.** `/webhook/loop` and `/webhook/doorking` accept any request, with any method. Anyone on the LAN can inject events. At a minimum, allow only the configured device IPs (see the device-mapping settings), and require the expected method.
+- [x] **20. The webhooks have no authentication.** `/webhook/loop` and `/webhook/doorking` accept any request, with any method. Anyone on the LAN can inject events. At a minimum, allow only the configured device IPs (see the device-mapping settings), and require the expected method. Done for addresses: the webhooks accept only the "Device Sources" setting's addresses and this machine, and the RAM listener only "RAM Stream Sources"; refusals are logged and journaled. Methods aren't restricted, since Shelly webhooks send GET. The address lists move into the per-lane gate settings when those are built.
 - [x] **21. Database errors are shown to anyone.** On a database error, `fsbhoa_ac_vehicle_get_recent()` returns the error and `last_query` to the caller with HTTP 200, and the route is public (item 2). Log the details, and return a generic 500.
 - [x] **22. The monitor builds cards from unescaped text.** `createCard()` in `fsbhoa-vehicle-monitor.js` puts `gate_identifier`, `auth_id`, the plate and `cardholder_name` into `innerHTML` without escaping. `sanitize_text_field` limits the risk, but the values come from unauthenticated webhooks. Escape them, or build the card with `textContent`.
 - [x] **23. The config file is readable by everyone.** `write_config_from_array()` writes `vehicle_service.json` with default permissions, and it will hold the API key (item 1). Set the permissions to 0640, with the group the service runs as. Report a failed write to the admin instead of hiding it with `@`.

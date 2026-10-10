@@ -1,0 +1,18 @@
+
+SOUTH GATES NEW        10/09/26    4:05PM   Network              Failed To Connect                                                                            
+
+WORKBENCH              10/09/26    4:20PM   Network              Connection                                                                                   
+
+WORKBENCH              10/09/26    4:20PM   RS232                Download Data                                                                                
+
+WORKBENCH              10/09/26    4:22PM   Cards        06549   & SHUT, OPEN      Admit   Relay 2                                                            
+
+WORKBENCH              10/10/26    6:22AM                                                  Relay 1                                                            
+
+WORKBENCH              10/10/26    6:22AM   Cards        10018   TESTER, ALICE     Admit   Relay 1                                                            
+
+WORKBENCH              10/10/26    7:37AM   RS232                Database is Up To Date                                                                           
+
+WORKBENCH              10/10/26    7:45AM   Cards        01234   & SHUT, OPEN      Admit   Relay 1                                                            
+
+WORKBENCH              10/10/26    7:52AM   Entry Code   6020    SAMPLE, BOB       Admit   Relay 1                                                            

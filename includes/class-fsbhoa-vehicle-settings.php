@@ -57,6 +57,8 @@ class FSBHOA_Vehicle_Settings {
 			'correlation_window'   => 15,
 			'image_retention_days' => 90,
 			'enable_debug_logging' => 0,
+			'ram_sources'          => '',
+			'device_sources'       => '',
 		);
 	}
 
@@ -123,6 +125,39 @@ class FSBHOA_Vehicle_Settings {
 			self::PAGE_SLUG,
 			'fsbhoa_vehicle_daemon_section',
 			array( 'label_for' => 'fsbhoa_vehicle_daemon_port' )
+		);
+
+		add_settings_section(
+			'fsbhoa_vehicle_sources_section',
+			__( 'Gate Devices', 'fsbhoa-ac-vehicle' ),
+			array( $this, 'render_sources_section_description' ),
+			self::PAGE_SLUG
+		);
+
+		add_settings_field(
+			'ram_sources',
+			__( 'RAM Stream Sources', 'fsbhoa-ac-vehicle' ),
+			array( $this, 'render_ip_list_field' ),
+			self::PAGE_SLUG,
+			'fsbhoa_vehicle_sources_section',
+			array(
+				'label_for'   => 'fsbhoa_vehicle_ram_sources',
+				'key'         => 'ram_sources',
+				'description' => __( 'Comma-delimited IP addresses of the PCs running DoorKing RAM whose Live Streaming output points at this server, port 8089. Connections from any other address are refused. On the testbed, the workbench RAM arrives through the VPN as 192.168.70.3.', 'fsbhoa-ac-vehicle' ),
+			)
+		);
+
+		add_settings_field(
+			'device_sources',
+			__( 'Device Sources', 'fsbhoa-ac-vehicle' ),
+			array( $this, 'render_ip_list_field' ),
+			self::PAGE_SLUG,
+			'fsbhoa_vehicle_sources_section',
+			array(
+				'label_for'   => 'fsbhoa_vehicle_device_sources',
+				'key'         => 'device_sources',
+				'description' => __( 'Comma-delimited IP addresses of the gate devices (loop sensor Shellys, cameras) allowed to call vehicle_service\'s webhooks on the daemon port. Calls from any other address are refused.', 'fsbhoa-ac-vehicle' ),
+			)
 		);
 
 		add_settings_section(
@@ -207,6 +242,10 @@ class FSBHOA_Vehicle_Settings {
 
 		$sanitized['enable_debug_logging'] = ! empty( $input['enable_debug_logging'] ) ? 1 : 0;
 
+		foreach ( array( 'ram_sources', 'device_sources' ) as $key ) {
+			$sanitized[ $key ] = $this->sanitize_ip_list( $input[ $key ] ?? '', $key );
+		}
+
         if ( ! $this->write_config_from_array( $sanitized ) ) {
 			add_settings_error(
 				self::OPTION_NAME,
@@ -220,6 +259,53 @@ class FSBHOA_Vehicle_Settings {
 		}
 
 		return $sanitized;
+	}
+
+	/**
+	 * Keeps the valid IP addresses from a comma-delimited list, and warns about the rest.
+	 */
+	private function sanitize_ip_list( $value, $key ) {
+		$valid = array();
+		foreach ( explode( ',', sanitize_text_field( $value ) ) as $item ) {
+			$item = trim( $item );
+			if ( '' === $item ) {
+				continue;
+			}
+			if ( filter_var( $item, FILTER_VALIDATE_IP ) ) {
+				$valid[] = $item;
+			} else {
+				add_settings_error(
+					self::OPTION_NAME,
+					'fsbhoa_vehicle_bad_ip_' . $key,
+					/* translators: %s: the rejected entry */
+					sprintf( __( '"%s" is not an IP address and was not saved.', 'fsbhoa-ac-vehicle' ), $item )
+				);
+			}
+		}
+		return implode( ', ', array_unique( $valid ) );
+	}
+
+	/**
+	 * Splits a saved comma-delimited list into an array for vehicle_service.json.
+	 */
+	private static function ip_list_array( $value ) {
+		return array_values( array_filter( array_map( 'trim', explode( ',', (string) $value ) ) ) );
+	}
+
+	public function render_sources_section_description() {
+		echo '<p>' . esc_html__( 'The gate devices allowed to send inputs to vehicle_service. Every input they send is recorded in the raw-input journal (/var/lib/fsbhoa/vehicle_journal). These lists stand in for the per-lane gate settings until those are built. This server itself is always allowed. Restart vehicle_service after changing them.', 'fsbhoa-ac-vehicle' ) . '</p>';
+	}
+
+	public function render_ip_list_field( $args ) {
+		$options = self::get_options();
+		?>
+		<input type="text"
+				 id="<?php echo esc_attr( $args['label_for'] ); ?>"
+				 name="<?php echo esc_attr( self::OPTION_NAME . '[' . $args['key'] . ']' ); ?>"
+				 value="<?php echo esc_attr( $options[ $args['key'] ] ); ?>"
+				 class="regular-text code" />
+		<p class="description"><?php echo esc_html( $args['description'] ); ?></p>
+		<?php
 	}
 
 	public function render_ingest_section_description() {
@@ -269,7 +355,7 @@ class FSBHOA_Vehicle_Settings {
 				 value="<?php echo esc_attr( $options['daemon_host'] ); ?>" 
 				 class="regular-text code" />
 		<p class="description">
-			<?php esc_html_e( 'Hostname or internal IP running vehicle_service (default: 127.0.0.1).', 'fsbhoa-ac-vehicle' ); ?>
+			<?php esc_html_e( 'Address this page checks vehicle_service\'s health at (default: 127.0.0.1). vehicle_service runs on this machine and listens on all interfaces; its health check answers only this machine.', 'fsbhoa-ac-vehicle' ); ?>
 		</p>
 		<?php
 	}
@@ -413,6 +499,8 @@ class FSBHOA_Vehicle_Settings {
 			'enable_debug_logging' => ! empty( $options['enable_debug_logging'] ) ? 1 : 0,
 			'wordpress_host'       => sanitize_text_field( $wp_host ? $wp_host : '127.0.0.1' ),
 			'environment'          => sanitize_text_field( $environment ),
+			'ram_sources'          => self::ip_list_array( $options['ram_sources'] ?? '' ),
+			'device_sources'       => self::ip_list_array( $options['device_sources'] ?? '' ),
 		);
 
 		$json_data = json_encode($config, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES );
