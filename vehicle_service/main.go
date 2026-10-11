@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
@@ -291,7 +292,7 @@ func main() {
 
 	// DoorKing RAM Live Streaming. Journaled only for now (traffic study); it doesn't feed
 	// the correlator until per-lane correlation is built.
-	ram := &RAMListener{port: cfg.RAMPort, sources: NewSources(cfg.RAMSources), journal: journal, debugf: gsm.debugf}
+	ram := NewRAMListener(cfg.RAMPort, NewSources(cfg.RAMSources), journal, gsm.debugf)
 	go ram.Run()
 
 	// Ensure drop directory exists before starting watcher
@@ -302,15 +303,31 @@ func main() {
 	// Start drop directory watcher
 	go gsm.WatchDropDir()
 
-	devices := NewSources(cfg.DeviceSources)
-	if len(devices) == 0 {
-		log.Printf("[CONFIG] WARNING: no device sources configured; only this machine may call the webhooks")
+	var devices atomic.Pointer[Sources]
+	setDevices := func(list []string) {
+		s := NewSources(list)
+		devices.Store(&s)
+		if len(s) == 0 {
+			log.Printf("[CONFIG] WARNING: no device sources configured; only this machine may call the webhooks")
+		}
 	}
+	setDevices(cfg.DeviceSources)
+
+	// Saving the vehicle settings rewrites the config file. Apply the address lists without
+	// a restart, which would drop the RAM connections (RAM reconnects only on its next job).
+	go WatchConfig(*configPath, func(next *ServiceConfig) {
+		ram.SetSources(NewSources(next.RAMSources))
+		setDevices(next.DeviceSources)
+		log.Printf("[CONFIG] Reloaded: RAM stream sources %v, device sources %v", next.RAMSources, next.DeviceSources)
+		if changed := restartNeeded(cfg, next); len(changed) > 0 {
+			log.Printf("[CONFIG] Changed settings that need a restart of vehicle_service to apply: %v", changed)
+		}
+	})
 
 	// fromDevice refuses webhook calls from anywhere but a configured device or this machine.
 	fromDevice := func(next http.HandlerFunc) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
-			if !devices.Allowed(r.RemoteAddr) {
+			if !devices.Load().Allowed(r.RemoteAddr) {
 				ip, _ := remoteAddr(r.RemoteAddr)
 				log.Printf("[WARN] Refused %s from %s: not a configured device", r.URL.Path, r.RemoteAddr)
 				journal.Write("webhook_refused", map[string]interface{}{"remote": ip.String(), "path": r.URL.Path, "query": r.URL.RawQuery})
@@ -329,12 +346,14 @@ func main() {
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
+		streams := ram.Streams()
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"service":         "vehicle_service",
 			"status":          "healthy",
 			"uptime":          int64(time.Since(startTime).Seconds()),
-			"ram_connections": ram.active.Load(),
+			"ram_connections": len(streams),
+			"ram_streams":     streams,            // each open RAM connection and the accounts it has sent
 			"last_seen":       journal.LastSeen(), // newest journal entry of each kind
 		})
 	}

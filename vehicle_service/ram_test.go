@@ -161,7 +161,7 @@ func TestRAMListener(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer ln.Close()
-	l := &RAMListener{sources: NewSources(nil), journal: j, debugf: func(string, ...interface{}) {}}
+	l := NewRAMListener(0, NewSources(nil), j, func(string, ...interface{}) {})
 	go l.serve(ln)
 
 	data, _ := os.ReadFile("testdata/ram_records.bin")
@@ -239,4 +239,43 @@ func readJournal(t *testing.T, dir string) (map[string]int, []map[string]interfa
 		fh.Close()
 	}
 	return kinds, entries
+}
+
+func TestRestartNeeded(t *testing.T) {
+	old := &ServiceConfig{DaemonPort: 8088, RAMPort: 8089, APIKey: "a", RAMSources: []string{"1.2.3.4"}}
+	cur := *old
+	cur.RAMSources = []string{"1.2.3.4", "5.6.7.8"} // applied without a restart
+	if got := restartNeeded(old, &cur); len(got) != 0 {
+		t.Errorf("address list change reported as needing a restart: %v", got)
+	}
+	cur.RAMPort, cur.APIKey = 9000, "b"
+	if got := restartNeeded(old, &cur); len(got) != 2 || got[0] != "ram_port" || got[1] != "api_key" {
+		t.Errorf("restartNeeded = %v, want [ram_port api_key]", got)
+	}
+}
+
+// TestWatchConfig checks that a config rewritten the way WordPress does it (temp file,
+// then rename) is picked up.
+func TestWatchConfig(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "vehicle_service.json")
+	if err := os.WriteFile(path, []byte(`{"ram_sources":["1.2.3.4"]}`), 0640); err != nil {
+		t.Fatal(err)
+	}
+	got := make(chan *ServiceConfig, 1)
+	go WatchConfig(path, func(c *ServiceConfig) { got <- c })
+	time.Sleep(100 * time.Millisecond) // let the watch start
+
+	tmp := path + ".tmp"
+	os.WriteFile(tmp, []byte(`{"ram_sources":["1.2.3.4","192.168.42.182"]}`), 0640)
+	os.Rename(tmp, path)
+
+	select {
+	case c := <-got:
+		if len(c.RAMSources) != 2 || c.RAMSources[1] != "192.168.42.182" {
+			t.Errorf("reloaded RAM sources = %v", c.RAMSources)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("config change not picked up")
+	}
 }

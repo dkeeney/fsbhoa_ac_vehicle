@@ -293,7 +293,7 @@ class FSBHOA_Vehicle_Settings {
 	}
 
 	public function render_sources_section_description() {
-		echo '<p>' . esc_html__( 'The gate devices allowed to send inputs to vehicle_service. Every input they send is recorded in the raw-input journal (/var/lib/fsbhoa/vehicle_journal). These lists stand in for the per-lane gate settings until those are built. This server itself is always allowed. Restart vehicle_service after changing them.', 'fsbhoa-ac-vehicle' ) . '</p>';
+		echo '<p>' . esc_html__( 'The gate devices allowed to send inputs to vehicle_service. Every input they send is recorded in the raw-input journal (/var/lib/fsbhoa/vehicle_journal). These lists stand in for the per-lane gate settings until those are built. This server itself is always allowed. Changes apply as soon as the settings are saved, without restarting vehicle_service (a restart would drop the RAM connections).', 'fsbhoa-ac-vehicle' ) . '</p>';
 	}
 
 	public function render_ip_list_field( $args ) {
@@ -442,9 +442,11 @@ class FSBHOA_Vehicle_Settings {
 			)
 		);
 
+		$health = null;
 		if ( ! is_wp_error( $response ) && 200 === wp_remote_retrieve_response_code( $response ) ) {
 			$daemon_live = true;
 			$status_msg  = __( 'Active & Reachable', 'fsbhoa-ac-vehicle' );
+			$health      = json_decode( wp_remote_retrieve_body( $response ), true );
 		} else {
 			$status_msg = __( 'Unreachable / Stopped', 'fsbhoa-ac-vehicle' );
 		}
@@ -463,6 +465,12 @@ class FSBHOA_Vehicle_Settings {
 				</p>
 			</div>
 
+			<?php
+			if ( is_array( $health ) ) {
+				$this->render_input_status( $health );
+			}
+			?>
+
 			<form action="options.php" method="post">
 				<?php
 				settings_fields( self::OPTION_GROUP );
@@ -470,6 +478,86 @@ class FSBHOA_Vehicle_Settings {
 				submit_button( __( 'Save Vehicle Settings', 'fsbhoa-ac-vehicle' ) );
 				?>
 			</form>
+		</div>
+		<?php
+	}
+
+	/**
+	 * Shows whether DoorKing RAM is connected, and when each kind of input last arrived.
+	 *
+	 * RAM doesn't reconnect by itself after its connection drops (a restart of
+	 * vehicle_service, a reboot, a network break); it reconnects only when it starts its next
+	 * job. Until then no live transactions arrive, so a missing connection is an error.
+	 *
+	 * @param array $health The decoded /health response.
+	 */
+	private function render_input_status( $health ) {
+		$streams   = isset( $health['ram_streams'] ) && is_array( $health['ram_streams'] ) ? $health['ram_streams'] : array();
+		$last_seen = isset( $health['last_seen'] ) && is_array( $health['last_seen'] ) ? $health['last_seen'] : array();
+		$uptime    = isset( $health['uptime'] ) ? absint( $health['uptime'] ) : 0;
+		$options   = self::get_options();
+		$expected  = '' !== trim( (string) $options['ram_sources'] );
+
+		$format = function ( $iso ) {
+			$ts = strtotime( (string) $iso );
+			if ( ! $ts ) {
+				return '';
+			}
+			/* translators: 1: date and time, 2: how long ago */
+			return sprintf( __( '%1$s (%2$s ago)', 'fsbhoa-ac-vehicle' ), wp_date( 'M j, g:i:s a', $ts ), human_time_diff( $ts ) );
+		};
+		?>
+		<div class="notice notice-<?php echo ( $streams || ! $expected ) ? 'info' : 'error'; ?> inline" style="margin: 15px 0;">
+			<p><strong><?php esc_html_e( 'DoorKing RAM Live Streaming', 'fsbhoa-ac-vehicle' ); ?></strong></p>
+			<?php if ( $streams ) : ?>
+				<ul style="list-style: disc; margin-left: 20px;">
+					<?php foreach ( $streams as $stream ) : ?>
+						<li>
+							<?php
+							$accounts = ! empty( $stream['accounts'] ) ? implode( ', ', array_map( 'strval', (array) $stream['accounts'] ) ) : __( 'no records yet', 'fsbhoa-ac-vehicle' );
+							printf(
+								/* translators: 1: IP address, 2: RAM account names, 3: connection time, 4: last record time */
+								esc_html__( 'Connected from %1$s (accounts: %2$s) since %3$s; last record %4$s.', 'fsbhoa-ac-vehicle' ),
+								'<code>' . esc_html( $stream['remote'] ?? '' ) . '</code>',
+								esc_html( $accounts ),
+								esc_html( $format( $stream['connected_at'] ?? '' ) ),
+								esc_html( ! empty( $stream['last_record_at'] ) ? $format( $stream['last_record_at'] ) : __( 'none', 'fsbhoa-ac-vehicle' ) )
+							);
+							?>
+						</li>
+					<?php endforeach; ?>
+				</ul>
+			<?php elseif ( $expected ) : ?>
+				<p>
+					<?php esc_html_e( "No RAM connection is open, so live DoorKing transactions are not being received. RAM does not reconnect by itself: it reconnects when it next starts a job (for example Send Time, or a transaction download). Transactions in between are still in RAM's own history.", 'fsbhoa-ac-vehicle' ); ?>
+				</p>
+			<?php else : ?>
+				<p><?php esc_html_e( 'No RAM stream sources are configured (Gate Devices, below).', 'fsbhoa-ac-vehicle' ); ?></p>
+			<?php endif; ?>
+
+			<p>
+				<?php
+				$labels = array(
+					'ram_record'      => __( 'DoorKing record', 'fsbhoa-ac-vehicle' ),
+					'loop'            => __( 'Loop change', 'fsbhoa-ac-vehicle' ),
+					'plate'           => __( 'Plate read', 'fsbhoa-ac-vehicle' ),
+					'ram_refused'     => __( 'Refused RAM connection', 'fsbhoa-ac-vehicle' ),
+					'webhook_refused' => __( 'Refused device call', 'fsbhoa-ac-vehicle' ),
+				);
+				$lines  = array();
+				foreach ( $labels as $kind => $label ) {
+					$when    = ! empty( $last_seen[ $kind ] ) ? $format( $last_seen[ $kind ] ) : __( 'none', 'fsbhoa-ac-vehicle' );
+					$lines[] = esc_html( $label . ': ' . $when );
+				}
+				echo implode( '<br>', $lines ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- each line escaped above
+				?>
+				<br><em>
+				<?php
+				/* translators: %s: how long vehicle_service has been running */
+				echo esc_html( sprintf( __( 'Times are since vehicle_service started, %s ago. Every input is in the journal, /var/lib/fsbhoa/vehicle_journal.', 'fsbhoa-ac-vehicle' ), human_time_diff( time() - $uptime ) ) );
+				?>
+				</em>
+			</p>
 		</div>
 		<?php
 	}

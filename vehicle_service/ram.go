@@ -7,7 +7,9 @@ import (
 	"log"
 	"net"
 	"net/netip"
+	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -161,10 +163,54 @@ func (s Sources) Allowed(hostport string) bool {
 // RAMListener accepts RAM Live Streaming connections and journals every record.
 type RAMListener struct {
 	port    int
-	sources Sources
+	sources atomic.Pointer[Sources] // replaced when the config file changes
 	journal *Journal
 	debugf  func(string, ...interface{})
-	active  atomic.Int32 // open RAM connections, for the health report
+
+	mu      sync.Mutex
+	streams map[int]*ramStream // open connections, for the health report
+	nextID  int
+}
+
+// ramStream describes one open RAM connection.
+type ramStream struct {
+	remote      string
+	connectedAt time.Time
+	lastRecord  time.Time
+	accounts    map[string]bool
+}
+
+func NewRAMListener(port int, sources Sources, journal *Journal, debugf func(string, ...interface{})) *RAMListener {
+	l := &RAMListener{port: port, journal: journal, debugf: debugf, streams: map[int]*ramStream{}}
+	l.SetSources(sources)
+	return l
+}
+
+func (l *RAMListener) SetSources(s Sources) { l.sources.Store(&s) }
+
+// Streams describes the open RAM connections, for the health report.
+func (l *RAMListener) Streams() []map[string]interface{} {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	out := []map[string]interface{}{}
+	for _, st := range l.streams {
+		accounts := []string{}
+		for a := range st.accounts {
+			accounts = append(accounts, a)
+		}
+		sort.Strings(accounts)
+		entry := map[string]interface{}{
+			"remote":       st.remote,
+			"connected_at": st.connectedAt.Local().Format(journalTimeFormat),
+			"accounts":     accounts,
+		}
+		if !st.lastRecord.IsZero() {
+			entry["last_record_at"] = st.lastRecord.Local().Format(journalTimeFormat)
+		}
+		out = append(out, entry)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i]["connected_at"].(string) < out[j]["connected_at"].(string) })
+	return out
 }
 
 func (l *RAMListener) Run() {
@@ -173,7 +219,7 @@ func (l *RAMListener) Run() {
 		log.Printf("[ERROR] DoorKing listener could not start on port %d: %v", l.port, err)
 		return
 	}
-	if len(l.sources) == 0 {
+	if len(*l.sources.Load()) == 0 {
 		log.Printf("[CONFIG] WARNING: no RAM stream sources configured; only this machine may connect to port %d", l.port)
 	}
 	log.Printf("DoorKing RAM listener on port %d", l.port)
@@ -199,14 +245,23 @@ func (l *RAMListener) handle(conn net.Conn) {
 	defer conn.Close()
 	remote := conn.RemoteAddr().String()
 	ip, _ := remoteAddr(remote)
-	if !l.sources.Allowed(remote) {
+	if !l.sources.Load().Allowed(remote) {
 		log.Printf("[WARN] Refused DoorKing connection from %s: not a configured RAM stream source", remote)
 		l.journal.Write("ram_refused", map[string]interface{}{"remote": ip.String()})
 		return
 	}
 
-	l.active.Add(1)
-	defer l.active.Add(-1)
+	stream := &ramStream{remote: ip.String(), connectedAt: time.Now(), accounts: map[string]bool{}}
+	l.mu.Lock()
+	id := l.nextID
+	l.nextID++
+	l.streams[id] = stream
+	l.mu.Unlock()
+	defer func() {
+		l.mu.Lock()
+		delete(l.streams, id)
+		l.mu.Unlock()
+	}()
 	log.Printf("[RAM] Connected: %s", remote)
 	l.journal.Write("ram_connect", map[string]interface{}{"remote": ip.String()})
 
@@ -231,6 +286,12 @@ func (l *RAMListener) handle(conn net.Conn) {
 		}
 		at := time.Now()
 		rec := ParseRAMRecord(line)
+		l.mu.Lock()
+		stream.lastRecord = at
+		if rec.Account != "" {
+			stream.accounts[rec.Account] = true
+		}
+		l.mu.Unlock()
 		write, summary := filter.Add(line, rec.Kind == "incomplete", at)
 		writeSummary(summary)
 		if !write {
