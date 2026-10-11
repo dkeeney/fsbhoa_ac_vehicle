@@ -7,6 +7,7 @@ import (
 	"log"
 	"net"
 	"net/netip"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -23,8 +24,10 @@ type RAMRecord struct {
 	Raw     string
 	Kind    string // "credential", "status", "incomplete" or "other"
 	Account string
+	Format  string // "text" or "xml" (RAM's two Live Streaming formats)
 	Date    string // the record's own date and time: whole minutes, and the panel's clock
 	Time    string
+	Stamp   string // XML format: the record's own timestamp, as sent (its UTC offset ignores DST)
 	Type    string // "Cards", "Entry Code", "Network", "RS232", ...
 	Code    string // device number or gate code, exactly as sent
 	Name    string
@@ -48,6 +51,7 @@ func col(s string, from, to int) string {
 func ParseRAMRecord(line string) RAMRecord {
 	r := RAMRecord{
 		Raw:     line,
+		Format:  "text",
 		Account: col(line, 0, 23),
 		Date:    col(line, 23, 35),
 		Time:    col(line, 35, 44),
@@ -72,11 +76,51 @@ func ParseRAMRecord(line string) RAMRecord {
 	return r
 }
 
+// xmlTag matches one line of an XML-format record, such as <Number>06549</Number>. RAM
+// doesn't escape its values (a name came through as "<Name>& SHUT, OPEN</Name>"), so this
+// is matched line by line instead of with an XML parser.
+var xmlTag = regexp.MustCompile(`^<(\w+)>(.*)</(\w+)>$`)
+
+// ParseRAMXML builds a record from the lines of one XML-format record, from <Transaction>
+// to </Transaction>. The fields are those of the text format, under other names.
+func ParseRAMXML(lines []string) RAMRecord {
+	tags := map[string]string{}
+	for _, l := range lines {
+		if m := xmlTag.FindStringSubmatch(strings.TrimSpace(l)); m != nil && m[1] == m[3] {
+			tags[m[1]] = strings.TrimSpace(m[2])
+		}
+	}
+	r := RAMRecord{
+		Raw:     strings.Join(lines, ""),
+		Format:  "xml",
+		Account: tags["Account"],
+		Stamp:   tags["Timestamp"],
+		Type:    tags["Event"],
+	}
+	switch r.Type {
+	case "Network", "RS232":
+		r.Kind = "status"
+		r.Message = tags["Name"]
+		return r
+	case "Cards", "Entry Code":
+		r.Kind = "credential"
+	case "":
+		r.Kind = "incomplete"
+	default:
+		r.Kind = "other"
+	}
+	r.Code = tags["Number"]
+	r.Name = tags["Name"]
+	r.Result = tags["Access"]
+	r.Relay = tags["Relay"]
+	return r
+}
+
 // Fields returns the record as journal fields, leaving out empty columns.
 func (r RAMRecord) Fields() map[string]interface{} {
-	f := map[string]interface{}{"raw": r.Raw, "record_kind": r.Kind}
+	f := map[string]interface{}{"raw": r.Raw, "record_kind": r.Kind, "format": r.Format}
 	for k, v := range map[string]string{
-		"account": r.Account, "ram_date": r.Date, "ram_time": r.Time, "type": r.Type,
+		"account": r.Account, "ram_date": r.Date, "ram_time": r.Time, "ram_timestamp": r.Stamp, "type": r.Type,
 		"code": r.Code, "name": r.Name, "result": r.Result, "relay": r.Relay, "message": r.Message,
 	} {
 		if v != "" {
@@ -188,6 +232,26 @@ func NewRAMListener(port int, sources Sources, journal *Journal, debugf func(str
 
 func (l *RAMListener) SetSources(s Sources) { l.sources.Store(&s) }
 
+// Allowed reports whether a remote address is a configured RAM stream source.
+func (l *RAMListener) Allowed(hostport string) bool { return l.sources.Load().Allowed(hostport) }
+
+// Accounts returns each RAM account seen on an open connection, with when the newest of
+// those connections opened. RAM sends a "Network Connection" record for the account as
+// soon as it connects, so an account appears here at once.
+func (l *RAMListener) Accounts() map[string]time.Time {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	out := map[string]time.Time{}
+	for _, st := range l.streams {
+		for a := range st.accounts {
+			if st.connectedAt.After(out[a]) {
+				out[a] = st.connectedAt
+			}
+		}
+	}
+	return out
+}
+
 // Streams describes the open RAM connections, for the health report.
 func (l *RAMListener) Streams() []map[string]interface{} {
 	l.mu.Lock()
@@ -277,15 +341,38 @@ func (l *RAMListener) handle(conn net.Conn) {
 		log.Printf("[RAM] %d identical copies of one record collapsed from %s", s.count, remote)
 	}
 
+	// RAM sends each record in the text format on one line, or in XML over several lines,
+	// from <Transaction> to </Transaction>. Both are accepted, so switching the format in
+	// RAM, or someone setting it to XML, can't lose a record.
+	var xml []string // lines of an XML record in progress
+
 	scanner := bufio.NewScanner(conn) // splits on LF and drops the CR
 	scanner.Buffer(make([]byte, 4096), 64*1024)
 	for scanner.Scan() {
 		line := scanner.Text()
-		if strings.TrimSpace(line) == "" {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
 			continue
 		}
+		var rec RAMRecord
+		if trimmed == "<Transaction>" || xml != nil {
+			if trimmed == "<Transaction>" {
+				xml = nil // a new record; anything unfinished before it is dropped
+			}
+			xml = append(xml, trimmed)
+			if trimmed != "</Transaction>" && len(xml) < 50 {
+				continue
+			}
+			rec = ParseRAMXML(xml)
+			line = rec.Raw
+			xml = nil
+		} else if strings.HasPrefix(trimmed, "<") {
+			// Part of an XML record whose start we missed (seen right after a reconnect)
+			rec = RAMRecord{Raw: line, Format: "xml", Kind: "other"}
+		} else {
+			rec = ParseRAMRecord(line)
+		}
 		at := time.Now()
-		rec := ParseRAMRecord(line)
 		l.mu.Lock()
 		stream.lastRecord = at
 		if rec.Account != "" {

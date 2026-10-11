@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -359,6 +360,26 @@ func main() {
 	}
 	mux.HandleFunc("/health", healthHandler)
 	mux.HandleFunc("/status", healthHandler)
+
+	// For the RAM PC's automation script (DK_Sync.ahk), which makes RAM reconnect an account
+	// whose stream is missing. Plain text, one line per account on an open connection:
+	// "ACCOUNT<tab>connected at". Answers RAM stream sources and this machine only.
+	mux.HandleFunc("/ram-status", func(w http.ResponseWriter, r *http.Request) {
+		if !ram.Allowed(r.RemoteAddr) {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
+		accounts := ram.Accounts()
+		names := make([]string, 0, len(accounts))
+		for a := range accounts {
+			names = append(names, a)
+		}
+		sort.Strings(names)
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		for _, a := range names {
+			fmt.Fprintf(w, "%s\t%s\r\n", a, accounts[a].Format(journalTimeFormat))
+		}
+	})
 
 	// Shelly Pro 1 Loop Detector Webhook: ?state=on|off (also 1|0, true|false)
 	mux.HandleFunc("/webhook/loop", fromDevice(func(w http.ResponseWriter, r *http.Request) {

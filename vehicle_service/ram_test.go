@@ -44,7 +44,7 @@ func TestParseRAMRecord(t *testing.T) {
 	recs := loadRecords(t)
 
 	card := findRecord(t, recs, "06549")
-	want := RAMRecord{Kind: "credential", Account: "WORKBENCH", Date: "10/09/26", Time: "4:22PM",
+	want := RAMRecord{Format: "text", Kind: "credential", Account: "WORKBENCH", Date: "10/09/26", Time: "4:22PM",
 		Type: "Cards", Code: "06549", Name: "& SHUT, OPEN", Result: "Admit", Relay: "Relay 2"}
 	want.Raw = card.Raw
 	if card != want {
@@ -277,5 +277,103 @@ func TestWatchConfig(t *testing.T) {
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("config change not picked up")
+	}
+}
+
+// testdata/ram_records_xml.bin holds the records captured on 2026-10-11 with RAM's Live
+// Streaming format set to XML: a Network Connection, a card and an entry code, with the
+// resident's name replaced. Note the unescaped "&" in the card's name.
+
+func TestParseRAMXML(t *testing.T) {
+	data, err := os.ReadFile("testdata/ram_records_xml.bin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var recs []RAMRecord
+	var cur []string
+	for _, l := range strings.Split(string(data), "\r\n") {
+		if l = strings.TrimSpace(l); l == "" {
+			continue
+		}
+		cur = append(cur, l)
+		if l == "</Transaction>" {
+			recs = append(recs, ParseRAMXML(cur))
+			cur = nil
+		}
+	}
+	if len(recs) != 3 {
+		t.Fatalf("%d records, want 3", len(recs))
+	}
+	if r := recs[0]; r.Kind != "status" || r.Account != "WORKBENCH" || r.Type != "Network" || r.Message != "Connection" {
+		t.Errorf("status record: %+v", r)
+	}
+	card := recs[1]
+	want := RAMRecord{Format: "xml", Kind: "credential", Account: "WORKBENCH", Stamp: "2026-10-11T05:56:00.0-08:00",
+		Type: "Cards", Code: "06549", Name: "& SHUT, OPEN", Result: "Admit", Relay: "Relay 2"}
+	want.Raw = card.Raw
+	if card != want {
+		t.Errorf("card record:\n got %+v\nwant %+v", card, want)
+	}
+	if r := recs[2]; r.Kind != "credential" || r.Type != "Entry Code" || r.Code != "6020" || r.Relay != "Relay 1" {
+		t.Errorf("entry code record: %+v", r)
+	}
+}
+
+// TestRAMListenerFormats streams a format switch as seen on 2026-10-11: XML records, a stray
+// "</Transaction>" at the start of a connection, then text records. Every record must be
+// journaled once, and the account must show in Accounts.
+func TestRAMListenerFormats(t *testing.T) {
+	dir := t.TempDir()
+	j, err := NewJournal(dir, 30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	l := NewRAMListener(0, NewSources(nil), j, func(string, ...interface{}) {})
+	go l.serve(ln)
+
+	xml, _ := os.ReadFile("testdata/ram_records_xml.bin")
+	text, _ := os.ReadFile("testdata/ram_records.bin")
+	conn, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn.Write([]byte("\r\n</Transaction>\r\n"))
+	conn.Write(xml)
+	conn.Write(text)
+
+	var accounts map[string]time.Time
+	for deadline := time.Now().Add(3 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+		if accounts = l.Accounts(); len(accounts) == 2 {
+			break
+		}
+	}
+	if _, ok := accounts["WORKBENCH"]; !ok || len(accounts) != 2 { // the text test data also has SOUTH GATES NEW
+		t.Errorf("Accounts() = %v", accounts)
+	}
+	conn.Close()
+
+	var entries []map[string]interface{}
+	for deadline := time.Now().Add(3 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+		var kinds map[string]int
+		if kinds, entries = readJournal(t, dir); kinds["ram_disconnect"] == 1 {
+			break
+		}
+	}
+	formats := map[string]int{}
+	for _, e := range entries {
+		if e["kind"] == "ram_record" {
+			formats[e["format"].(string)+" "+e["record_kind"].(string)]++
+			if e["format"] == "xml" && e["code"] == "06549" && e["ram_timestamp"] != "2026-10-11T05:56:00.0-08:00" {
+				t.Errorf("xml card entry: %v", e)
+			}
+		}
+	}
+	if formats["xml other"] != 1 || formats["xml status"] != 1 || formats["xml credential"] != 2 || formats["text credential"] < 2 {
+		t.Errorf("journaled records by format and kind: %v", formats)
 	}
 }
