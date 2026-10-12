@@ -208,6 +208,8 @@ func (s Sources) Allowed(hostport string) bool {
 type RAMListener struct {
 	port    int
 	sources atomic.Pointer[Sources] // replaced when the config file changes
+	gates   atomic.Pointer[Gates]   // RAM account -> entrance lane, for tagging records
+	events  *DoorKingEvents         // optional: authentications sent as events on their own
 	journal *Journal
 	debugf  func(string, ...interface{})
 
@@ -227,10 +229,16 @@ type ramStream struct {
 func NewRAMListener(port int, sources Sources, journal *Journal, debugf func(string, ...interface{})) *RAMListener {
 	l := &RAMListener{port: port, journal: journal, debugf: debugf, streams: map[int]*ramStream{}}
 	l.SetSources(sources)
+	l.SetGates(NewGates(nil, nil))
 	return l
 }
 
 func (l *RAMListener) SetSources(s Sources) { l.sources.Store(&s) }
+
+func (l *RAMListener) SetGates(g *Gates) { l.gates.Store(g) }
+
+// SetEvents sets where authentications go as events of their own. Call before Run.
+func (l *RAMListener) SetEvents(e *DoorKingEvents) { l.events = e }
 
 // Allowed reports whether a remote address is a configured RAM stream source.
 func (l *RAMListener) Allowed(hostport string) bool { return l.sources.Load().Allowed(hostport) }
@@ -386,9 +394,19 @@ func (l *RAMListener) handle(conn net.Conn) {
 		}
 		fields := rec.Fields()
 		fields["remote"] = ip.String()
+		gate := l.gates.Load().ForAccount(rec.Account)
+		if gate != "" {
+			fields["gate"] = gate
+		}
 		l.journal.WriteAt(at, "ram_record", fields)
+		if l.events != nil {
+			l.events.Handle(rec, gate, at)
+		}
 		if rec.Kind == "credential" {
-			log.Printf("[RAM] %s %s %s %s %s", rec.Account, rec.Type, rec.Code, rec.Result, rec.Relay)
+			if gate == "" {
+				gate = "no gate"
+			}
+			log.Printf("[RAM] %s (%s) %s %s %s %s", rec.Account, gate, rec.Type, rec.Code, rec.Result, rec.Relay)
 		} else {
 			l.debugf("[RAM] %s record: %q", rec.Kind, strings.TrimSpace(line))
 		}

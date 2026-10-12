@@ -19,13 +19,16 @@ type ServiceConfig struct {
 	Environment        string `json:"environment"`    // FSBHOA_AC_ENVIRONMENT: testbed or production
 	QueueDir           string `json:"queue_dir"`      // events waiting for WordPress
 
-	// Traffic study (CLAUDE.md, "Build order", step 0). The address lists stand in for the
-	// per-lane Gates settings until those exist. This machine is always allowed.
-	RAMPort       int      `json:"ram_port"`       // DoorKing RAM Live Streaming listener
-	RAMSources    []string `json:"ram_sources"`    // addresses RAM may stream from
-	DeviceSources []string `json:"device_sources"` // addresses allowed to call the webhooks (Shellys, cameras)
-	JournalDir    string   `json:"journal_dir"`    // raw-input journal, one file per day
-	JournalDays   int      `json:"journal_days"`   // journal files kept this many days
+	// Lanes and devices (CLAUDE.md, "Lanes and devices"). This machine is always
+	// allowed. All of these are applied without a restart when the file changes.
+	Gates          []GateConfig     `json:"gates"`           // entrance lanes
+	ExitLanes      []ExitLaneConfig `json:"exit_lanes"`      // exit lanes
+	RAMPort        int              `json:"ram_port"`        // DoorKing RAM Live Streaming listener
+	RAMSources     []string         `json:"ram_sources"`     // addresses RAM may stream from
+	DeviceSources  []string         `json:"device_sources"`  // extra webhook addresses (older configs); the gates' devices are always allowed
+	DoorKingEvents bool             `json:"doorking_events"` // send DoorKing authentications as events on their own (stopgap)
+	JournalDir     string           `json:"journal_dir"`     // raw-input journal, one file per day
+	JournalDays    int              `json:"journal_days"`    // journal files kept this many days
 
 	// Local runtime fields (not in JSON, populated via flags/defaults)
 	WatchDir       string        `json:"-"`

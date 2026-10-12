@@ -58,23 +58,27 @@ The workbench DoorKing setup is on the developer's home network (192.168.1.x), w
 
 Status: **proposed, for review** (2026-10-10). The WordPress side (`fsbhoa_ac_vehicle.php`, settings in `includes/class-fsbhoa-vehicle-settings.php`) and the delivery path (on-disk queue, `POST /vehicle-event`) are built. `vehicle_service` still keeps a single in-progress event for the whole system; this design replaces that. Items marked **Open** need a decision or a look at the hardware before they are built.
 
-### Gates, lanes and devices (settings)
+### Lanes and devices (settings)
 
-The settings page gets a **Gates** table, with **one entry per entrance lane**. Each entrance lane has its own DoorKing controller, loop, LPR camera and overview camera, so each entry has:
-- **Name**, used as `gate_identifier` in the log and on the monitor: `North`, `South`, `Workbench`.
-- **RAM account name**, exactly as it appears in the stream (`WORKBENCH`). This is how a DoorKing record is matched to a gate.
-- **Entrance lane:** the Shelly's IP address and the LPR camera's IP address.
-- **Exit lane** (optional): the LPR camera's IP address. Exit lanes have no loop sensor and no DoorKing.
-- **Overview camera:** the IP address of the lane's overview (context) camera, which sees the vehicle as it passes the gate.
+The settings page has two tables (built in step 1):
+- **Entrance Lanes** (config key `gates`), **one row per entrance lane**. Each entrance lane has its own DoorKing controller, loop sensor, LPR camera and overview camera, so each row has:
+  - **Name**, used as `gate_identifier` in the log and on the monitor: `North`, `South`, `Workbench`.
+  - **RAM account**, as it appears in the stream (`WORKBENCH`; matched case-insensitively). This is how a DoorKing record is matched to its lane.
+  - The IP addresses of its **loop sensor** (Shelly), **LPR camera** and **overview camera** (which sees the vehicle as it passes the gate).
+- **Exit Lanes** (config key `exit_lanes`), one row per exit lane: **name**, **LPR camera** and an optional **overview camera**. Exit lanes have no DoorKing and no loop sensor. They aren't tied to an entrance: a car may enter at any entrance and leave at any exit. An exit lane's name may repeat an entrance's (`South`).
+
+Names are unique within a table, RAM accounts are unique, and a device address may be used only once across both tables. The device addresses are the webhook allowlist, and an address tells which lane a call is from.
 
 Plus, for the whole system:
 - **RAM stream sources:** the IP addresses allowed to connect to the DoorKing listener (192.168.70.3 on the testbed; the office RAM PC in production).
+- **Ports:** the device port (HTTP, 8088: webhooks, `/health`, `/ram-status`) and the DoorKing stream port (TCP, 8089: RAM's Live Streaming).
 
-The settings are written to `vehicle_service.json` with the rest of the config, as a `gates` list. Later, the camera entries will also need whatever the service uses to reach each camera (login, API details).
+Later, the camera entries will also need whatever the service uses to reach each camera (login, API details).
 
 Production today:
 - **North:** one entrance lane, one exit lane.
-- **South:** one entrance lane and one exit lane in use. A second entrance lane exists but is unused; if it's opened, it gets its own DoorKing controller, loop sensor and LPR camera, and is added as another gate entry (with no exit lane).
+- **South:** one entrance lane and one exit lane in use. A second entrance lane exists but is unused; if it's opened, it gets its own DoorKing controller, loop sensor and LPR camera, and is added as another entrance lane.
+- The South entrance's cameras: LPR camera 192.168.107.138, overview camera 192.168.107.131. The testbed's Workbench lane uses them, read-only (see "Tapping production cameras from the testbed").
 
 ### Listeners
 
@@ -103,7 +107,7 @@ The full rules are in `docs/GATE_SCENARIOS.md`: every situation we expect at a g
 
 ### Exit lanes
 
-**Open:** how exits look. Proposed: every plate read on an exit lane becomes an event with `direction` = `exit`, holding the plate text, the plate photo and a scene photo, sent straight away. It's stored in `ac_vehicle_log` and shown in the same monitor column with an "Exit" label. Needs a `direction` column (DB_VERSION 3).
+Exit lanes are their own table (above), not part of an entrance. **Open:** how exits look. Proposed: every plate read on an exit lane becomes an event with `direction` = `exit`, under the exit lane's name, holding the plate text, the plate photo and a scene photo, sent straight away. It's stored in `ac_vehicle_log` and shown in the same monitor column with an "Exit" label. Needs a `direction` column (DB_VERSION 3).
 
 ### Cameras
 
@@ -119,11 +123,12 @@ Added to what `vehicle_service` sends: `auth_type` (TODO item 7), `direction`, a
 
 ### Build order
 
-0. **Record real traffic.** *Built 2026-10-10:* the RAM listener (`vehicle_service/ram.go`), the journal (`journal.go`), loop off, and the "RAM Stream Sources" and "Device Sources" settings (stand-ins for the Gates table). The journal is `/var/lib/fsbhoa/vehicle_journal/journal-YYYY-MM-DD.jsonl`, kept 30 days; entry kinds are `ram_record`, `ram_repeat` (a collapsed flood), `ram_connect`, `ram_disconnect`, `ram_refused`, `loop`, `loop_invalid`, `plate` and `webhook_refused`. DoorKing records are journaled only; they don't feed the old single-event correlator. Not built yet: overview snapshots (needs the cameras' snapshot URL and login). Before writing the correlation, `vehicle_service` records every raw input (DoorKing records, loop on and off, plates) with its arrival time to a journal, one JSON line per input, without correlating anything. Run it against a real gate to check the scenario table, and keep the recordings: the correlation code is then tested by replaying them, and again whenever the rules change. This needs:
+0. **Record real traffic.** *Built 2026-10-10:* the RAM listener (`vehicle_service/ram.go`), the journal (`journal.go`), loop off, and the "RAM Stream Sources" and "Device Sources" settings (Device Sources was replaced by the lane tables in step 1). The journal is `/var/lib/fsbhoa/vehicle_journal/journal-YYYY-MM-DD.jsonl`, kept 30 days; entry kinds are `ram_record`, `ram_repeat` (a collapsed flood), `ram_connect`, `ram_disconnect`, `ram_refused`, `loop`, `loop_invalid`, `plate` and `webhook_refused`. DoorKing records are journaled only; they don't feed the old single-event correlator. Not built yet: overview snapshots (needs the cameras' snapshot URL and login). Before writing the correlation, `vehicle_service` records every raw input (DoorKing records, loop on and off, plates) with its arrival time to a journal, one JSON line per input, without correlating anything. Run it against a real gate to check the scenario table, and keep the recordings: the correlation code is then tested by replaying them, and again whenever the rules change. This needs:
    - **The loop signal at a real gate.** A new cable from the loop detector to a Shelly. Take it from a spare output on the arm's loop detector (many detectors have a second relay) as a dry contact. Never connect to the loop wire itself: that would change what the arm's detector sees and could affect the gate.
    - **The live stream from the production RAM.** The office RAM doesn't stream today, so pointing its Live Streaming output at the testbed for the study affects no one (the user's decision, 2026-10-10). RAM probably streams to only one address, so it moves to the production server when production's own `vehicle_service` needs it.
    - **Overview camera snapshots** at both loop on and loop off, to choose which moment gives the better context photo.
-1. Settings: the Gates table and RAM sources, written to `vehicle_service.json`.
+1. Settings: the lane tables and RAM sources, written to `vehicle_service.json`. *Built 2026-10-11:* the Entrance Lanes and Exit Lanes tables on the settings page ("Lanes and devices" above; a blank row adds a lane, a cleared name removes one), the `gates` and `exit_lanes` lists and `ram_port` in `vehicle_service.json`, and `vehicle_service/gates.go`. The lanes' devices replace the "Device Sources" list as the webhook allowlist (an older config's `device_sources` is still honored). The journal tags `ram_record` entries with their `gate` (by RAM account) and `loop` entries with their `gate`, `direction` and `device` (by address). Applied without a restart. Correlation doesn't use the gates yet.
+   - **DoorKing-only events (stopgap, built 2026-10-11):** the "DoorKing-Only Events" setting (config key `doorking_events`, off by default, applied without a restart) sends each admitted `Cards` or `Entry Code` record to the vehicle log on its own, with no loop or plate (`vehicle_service/doorking_events.go`). The gate is the lane whose RAM account sent it (or the account name if no lane has it), and `raw_details.source` is `doorking_only`. Repeat reads of the same code at the same lane less than 10 seconds apart are one event. It shows live DoorKing traffic on the monitor until correlation (step 3) replaces it; turn it off then, or each entry will be logged twice.
 2. DoorKing listener, parser and presentations, with unit tests built from the captured records in `/home/pi/ram_stream.log`, including the flood.
 3. Per-lane correlation following `docs/GATE_SCENARIOS.md`, with the existing loop webhook (adding loop off). Unit tests for each scenario in its table; then test with the Shelly, the fob and the Pi.
 4. Amendments: `POST /vehicle-event` updates, for late plates and late DoorKing records.

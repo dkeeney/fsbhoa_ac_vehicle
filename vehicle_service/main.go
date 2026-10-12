@@ -294,6 +294,9 @@ func main() {
 	// DoorKing RAM Live Streaming. Journaled only for now (traffic study); it doesn't feed
 	// the correlator until per-lane correlation is built.
 	ram := NewRAMListener(cfg.RAMPort, NewSources(cfg.RAMSources), journal, gsm.debugf)
+	ram.SetGates(NewGates(cfg.Gates, cfg.ExitLanes))
+	dkEvents := NewDoorKingEvents(dispatcher, cfg.DoorKingEvents)
+	ram.SetEvents(dkEvents)
 	go ram.Run()
 
 	// Ensure drop directory exists before starting watcher
@@ -304,22 +307,29 @@ func main() {
 	// Start drop directory watcher
 	go gsm.WatchDropDir()
 
+	// The gates' devices are the only addresses (besides this machine) that may call the
+	// webhooks, and a device's address tells which gate and lane a call is from.
+	var gates atomic.Pointer[Gates]
 	var devices atomic.Pointer[Sources]
-	setDevices := func(list []string) {
-		s := NewSources(list)
+	setGates := func(c *ServiceConfig) {
+		g := NewGates(c.Gates, c.ExitLanes)
+		s := g.DeviceSources(c.DeviceSources)
+		gates.Store(g)
 		devices.Store(&s)
-		if len(s) == 0 {
-			log.Printf("[CONFIG] WARNING: no device sources configured; only this machine may call the webhooks")
+		ram.SetGates(g)
+		if g.Count() == 0 {
+			log.Printf("[CONFIG] WARNING: no lanes configured; DoorKing records and loop changes aren't matched to a lane, and only this machine may call the webhooks")
 		}
 	}
-	setDevices(cfg.DeviceSources)
+	setGates(cfg)
 
 	// Saving the vehicle settings rewrites the config file. Apply the address lists without
 	// a restart, which would drop the RAM connections (RAM reconnects only on its next job).
 	go WatchConfig(*configPath, func(next *ServiceConfig) {
 		ram.SetSources(NewSources(next.RAMSources))
-		setDevices(next.DeviceSources)
-		log.Printf("[CONFIG] Reloaded: RAM stream sources %v, device sources %v", next.RAMSources, next.DeviceSources)
+		setGates(next)
+		dkEvents.SetEnabled(next.DoorKingEvents)
+		log.Printf("[CONFIG] Reloaded: %d entrance lanes, %d exit lanes, RAM stream sources %v", len(next.Gates), len(next.ExitLanes), next.RAMSources)
 		if changed := restartNeeded(cfg, next); len(changed) > 0 {
 			log.Printf("[CONFIG] Changed settings that need a restart of vehicle_service to apply: %v", changed)
 		}
@@ -396,7 +406,11 @@ func main() {
 			http.Error(w, "state must be on or off", http.StatusBadRequest)
 			return
 		}
-		journal.Write("loop", map[string]interface{}{"remote": ip.String(), "on": on})
+		entry := map[string]interface{}{"remote": ip.String(), "on": on}
+		if d, ok := gates.Load().ForAddr(r.RemoteAddr); ok {
+			entry["gate"], entry["direction"], entry["device"] = d.Gate, d.Direction, d.Device
+		}
+		journal.Write("loop", entry)
 		gsm.HandleLoopTrigger(on)
 		w.WriteHeader(http.StatusOK)
 	}))

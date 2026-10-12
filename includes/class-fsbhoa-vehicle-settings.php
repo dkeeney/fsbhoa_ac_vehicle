@@ -53,12 +53,15 @@ class FSBHOA_Vehicle_Settings {
 		return array(
 			'daemon_host'          => '127.0.0.1',
 			'daemon_port'          => 8088,
+			'ram_port'             => 8089,
 			'allowed_daemon_ips'   => '127.0.0.1, ::1',
 			'correlation_window'   => 15,
 			'image_retention_days' => 90,
 			'enable_debug_logging' => 0,
+			'doorking_events'      => 0,
 			'ram_sources'          => '',
-			'device_sources'       => '',
+			'gates'                => array(),
+			'exit_lanes'           => array(),
 		);
 	}
 
@@ -104,7 +107,7 @@ class FSBHOA_Vehicle_Settings {
 
 		add_settings_section(
 			'fsbhoa_vehicle_daemon_section',
-			__( 'vehicle_service Daemon Telemetry & Status', 'fsbhoa-ac-vehicle' ),
+			__( 'vehicle_service Ports', 'fsbhoa-ac-vehicle' ),
 			array( $this, 'render_daemon_section_description' ),
 			self::PAGE_SLUG
 		);
@@ -120,11 +123,20 @@ class FSBHOA_Vehicle_Settings {
 
 		add_settings_field(
 			'daemon_port',
-			__( 'Daemon Port', 'fsbhoa-ac-vehicle' ),
+			__( 'Device Port (HTTP)', 'fsbhoa-ac-vehicle' ),
 			array( $this, 'render_port_field' ),
 			self::PAGE_SLUG,
 			'fsbhoa_vehicle_daemon_section',
 			array( 'label_for' => 'fsbhoa_vehicle_daemon_port' )
+		);
+
+		add_settings_field(
+			'ram_port',
+			__( 'DoorKing Stream Port (TCP)', 'fsbhoa-ac-vehicle' ),
+			array( $this, 'render_ram_port_field' ),
+			self::PAGE_SLUG,
+			'fsbhoa_vehicle_daemon_section',
+			array( 'label_for' => 'fsbhoa_vehicle_ram_port' )
 		);
 
 		add_settings_section(
@@ -143,21 +155,26 @@ class FSBHOA_Vehicle_Settings {
 			array(
 				'label_for'   => 'fsbhoa_vehicle_ram_sources',
 				'key'         => 'ram_sources',
-				'description' => __( 'Comma-delimited IP addresses of the PCs running DoorKing RAM whose Live Streaming output points at this server, port 8089. Connections from any other address are refused. On the testbed, the workbench RAM arrives through the VPN as 192.168.70.3.', 'fsbhoa-ac-vehicle' ),
+				'description' => __( 'Comma-delimited IP addresses of the PCs running DoorKing RAM whose Live Streaming output points at this server (the DoorKing stream port, above). Connections from any other address are refused. On the testbed, the workbench RAM arrives through the VPN as 192.168.70.3.', 'fsbhoa-ac-vehicle' ),
 			)
 		);
 
 		add_settings_field(
-			'device_sources',
-			__( 'Device Sources', 'fsbhoa-ac-vehicle' ),
-			array( $this, 'render_ip_list_field' ),
+			'gates',
+			__( 'Entrance Lanes', 'fsbhoa-ac-vehicle' ),
+			array( $this, 'render_lanes_field' ),
 			self::PAGE_SLUG,
 			'fsbhoa_vehicle_sources_section',
-			array(
-				'label_for'   => 'fsbhoa_vehicle_device_sources',
-				'key'         => 'device_sources',
-				'description' => __( 'Comma-delimited IP addresses of the gate devices (loop sensor Shellys, cameras) allowed to call vehicle_service\'s webhooks on the daemon port. Calls from any other address are refused.', 'fsbhoa-ac-vehicle' ),
-			)
+			array( 'table' => 'gates' )
+		);
+
+		add_settings_field(
+			'exit_lanes',
+			__( 'Exit Lanes', 'fsbhoa-ac-vehicle' ),
+			array( $this, 'render_lanes_field' ),
+			self::PAGE_SLUG,
+			'fsbhoa_vehicle_sources_section',
+			array( 'table' => 'exit_lanes' )
 		);
 
 		add_settings_section(
@@ -186,6 +203,15 @@ class FSBHOA_Vehicle_Settings {
 		);
 
 		add_settings_field(
+			'doorking_events',
+			__( 'DoorKing-Only Events', 'fsbhoa-ac-vehicle' ),
+			array( $this, 'render_doorking_events_field' ),
+			self::PAGE_SLUG,
+			'fsbhoa_vehicle_policy_section',
+			array( 'label_for' => 'fsbhoa_vehicle_doorking_events' )
+		);
+
+		add_settings_field(
 			'enable_debug_logging',
 			__( 'Debug Logging', 'fsbhoa-ac-vehicle' ),
 			array( $this, 'render_debug_field' ),
@@ -210,6 +236,13 @@ class FSBHOA_Vehicle_Settings {
 			$sanitized['daemon_port'] = ( $port > 0 && $port <= 65535 ) ? $port : $defaults['daemon_port'];
 		} else {
 			$sanitized['daemon_port'] = $defaults['daemon_port'];
+		}
+
+		$ram_port              = absint( $input['ram_port'] ?? 0 );
+		$sanitized['ram_port'] = ( $ram_port > 0 && $ram_port <= 65535 ) ? $ram_port : $defaults['ram_port'];
+		if ( $sanitized['ram_port'] === $sanitized['daemon_port'] ) {
+			add_settings_error( self::OPTION_NAME, 'fsbhoa_vehicle_same_ports', __( 'The device port and the DoorKing stream port must differ; the stream port was set back to its default.', 'fsbhoa-ac-vehicle' ) );
+			$sanitized['ram_port'] = 8088 === $sanitized['daemon_port'] ? 8089 : $defaults['ram_port'];
 		}
 
 		if ( isset( $input['allowed_daemon_ips'] ) ) {
@@ -241,10 +274,12 @@ class FSBHOA_Vehicle_Settings {
 		}
 
 		$sanitized['enable_debug_logging'] = ! empty( $input['enable_debug_logging'] ) ? 1 : 0;
+		$sanitized['doorking_events']      = ! empty( $input['doorking_events'] ) ? 1 : 0;
 
-		foreach ( array( 'ram_sources', 'device_sources' ) as $key ) {
-			$sanitized[ $key ] = $this->sanitize_ip_list( $input[ $key ] ?? '', $key );
-		}
+		$sanitized['ram_sources'] = $this->sanitize_ip_list( $input['ram_sources'] ?? '', 'ram_sources' );
+		$ips                      = array();
+		$sanitized['gates']       = $this->sanitize_lanes( $input['gates'] ?? array(), 'gates', $ips );
+		$sanitized['exit_lanes']  = $this->sanitize_lanes( $input['exit_lanes'] ?? array(), 'exit_lanes', $ips );
 
         if ( ! $this->write_config_from_array( $sanitized ) ) {
 			add_settings_error(
@@ -286,6 +321,167 @@ class FSBHOA_Vehicle_Settings {
 	}
 
 	/**
+	 * The two lane tables. Entrance lanes (option and config key "gates") have a DoorKing
+	 * controller (RAM account), a loop sensor and cameras; exit lanes only cameras. A car may
+	 * enter at any entrance and leave at any exit, so the two aren't linked.
+	 *
+	 * @return array table key => array( 'account' => bool, 'devices' => field => label )
+	 */
+	private static function lane_tables() {
+		return array(
+			'gates'      => array(
+				'title'   => __( 'Entrance lane', 'fsbhoa-ac-vehicle' ),
+				'account' => true,
+				'devices' => array(
+					'loop_ip'     => __( 'Loop sensor', 'fsbhoa-ac-vehicle' ),
+					'lpr_ip'      => __( 'LPR camera', 'fsbhoa-ac-vehicle' ),
+					'overview_ip' => __( 'Overview camera', 'fsbhoa-ac-vehicle' ),
+				),
+			),
+			'exit_lanes' => array(
+				'title'   => __( 'Exit lane', 'fsbhoa-ac-vehicle' ),
+				'account' => false,
+				'devices' => array(
+					'lpr_ip'      => __( 'LPR camera', 'fsbhoa-ac-vehicle' ),
+					'overview_ip' => __( 'Overview camera', 'fsbhoa-ac-vehicle' ),
+				),
+			),
+		);
+	}
+
+	/**
+	 * Cleans one lane table. A row without a name is dropped (that is how a lane is removed).
+	 * Names must be unique within the table, RAM accounts unique, every address a valid IP,
+	 * and no address used twice in either table ($ips collects them across both); a row that
+	 * breaks a rule is kept without the bad value, with a warning.
+	 *
+	 * @param array  $rows  The submitted rows.
+	 * @param string $table 'gates' or 'exit_lanes'.
+	 * @param array  $ips   Addresses already used: IP => where. Updated.
+	 */
+	private function sanitize_lanes( $rows, $table, &$ips ) {
+		$spec     = self::lane_tables()[ $table ];
+		$lanes    = array();
+		$names    = array();
+		$accounts = array();
+		$warn     = function ( $code, $message ) use ( $table ) {
+			add_settings_error( self::OPTION_NAME, 'fsbhoa_vehicle_' . $table . '_' . $code, $message );
+		};
+
+		foreach ( (array) $rows as $row ) {
+			if ( ! is_array( $row ) ) {
+				continue;
+			}
+			$name = substr( sanitize_text_field( $row['name'] ?? '' ), 0, 32 );
+			if ( '' === $name ) {
+				$others = array_filter( array_map( 'trim', array_intersect_key( $row, $spec['devices'] + array( 'ram_account' => '' ) ) ) );
+				if ( $others ) {
+					/* translators: %s: "Entrance lane" or "Exit lane" */
+					$warn( 'noname', sprintf( __( '%s row without a name was removed. Every lane needs a name.', 'fsbhoa-ac-vehicle' ), $spec['title'] ) );
+				}
+				continue;
+			}
+			if ( isset( $names[ strtolower( $name ) ] ) ) {
+				/* translators: 1: "Entrance lane" or "Exit lane", 2: lane name */
+				$warn( 'dupname', sprintf( __( '%1$s "%2$s" appeared twice; the second was removed.', 'fsbhoa-ac-vehicle' ), $spec['title'], $name ) );
+				continue;
+			}
+			$names[ strtolower( $name ) ] = true;
+			$where                        = $spec['title'] . ' ' . $name;
+			$lane                         = array( 'name' => $name );
+
+			if ( $spec['account'] ) {
+				$account             = sanitize_text_field( $row['ram_account'] ?? '' );
+				$lane['ram_account'] = '';
+				if ( '' !== $account ) {
+					if ( isset( $accounts[ strtoupper( $account ) ] ) ) {
+						/* translators: 1: RAM account, 2: lane, 3: the other lane's name */
+						$warn( 'dupaccount', sprintf( __( 'RAM account "%1$s" was removed from %2$s: it already belongs to %3$s.', 'fsbhoa-ac-vehicle' ), $account, $where, $accounts[ strtoupper( $account ) ] ) );
+					} else {
+						$accounts[ strtoupper( $account ) ] = $name;
+						$lane['ram_account']                = $account;
+					}
+				}
+			}
+
+			foreach ( $spec['devices'] as $key => $label ) {
+				$ip           = trim( sanitize_text_field( $row[ $key ] ?? '' ) );
+				$lane[ $key ] = '';
+				if ( '' === $ip ) {
+					continue;
+				}
+				if ( ! filter_var( $ip, FILTER_VALIDATE_IP ) ) {
+					/* translators: 1: the rejected entry, 2: device, 3: lane */
+					$warn( 'badip', sprintf( __( '"%1$s" (%2$s, %3$s) is not an IP address and was not saved.', 'fsbhoa-ac-vehicle' ), $ip, $label, $where ) );
+				} elseif ( isset( $ips[ $ip ] ) ) {
+					/* translators: 1: IP address, 2: device, 3: lane, 4: where it is already used */
+					$warn( 'dupip', sprintf( __( '%1$s was removed from %2$s, %3$s: it is already the %4$s.', 'fsbhoa-ac-vehicle' ), $ip, $label, $where, $ips[ $ip ] ) );
+				} else {
+					$ips[ $ip ]   = $label . ', ' . $where;
+					$lane[ $key ] = $ip;
+				}
+			}
+			$lanes[] = $lane;
+		}
+		return $lanes;
+	}
+
+	/**
+	 * One lane table: a row per lane, plus a blank row for adding one.
+	 *
+	 * @param array $args 'table' => 'gates' or 'exit_lanes'.
+	 */
+	public function render_lanes_field( $args ) {
+		$table   = $args['table'];
+		$spec    = self::lane_tables()[ $table ];
+		$options = self::get_options();
+		$lanes   = is_array( $options[ $table ] ) ? array_values( $options[ $table ] ) : array();
+		$lanes[] = array(); // the blank row
+		$field   = function ( $i, $key ) use ( $table ) {
+			return self::OPTION_NAME . '[' . $table . '][' . $i . '][' . $key . ']';
+		};
+		?>
+		<table class="widefat striped" style="max-width: 900px;">
+			<thead>
+				<tr>
+					<th><?php esc_html_e( 'Name', 'fsbhoa-ac-vehicle' ); ?></th>
+					<?php if ( $spec['account'] ) : ?>
+						<th><?php esc_html_e( 'RAM account', 'fsbhoa-ac-vehicle' ); ?></th>
+					<?php endif; ?>
+					<?php foreach ( $spec['devices'] as $label ) : ?>
+						<th><?php echo esc_html( $label ); ?></th>
+					<?php endforeach; ?>
+				</tr>
+			</thead>
+			<tbody>
+				<?php foreach ( $lanes as $i => $lane ) : ?>
+					<tr>
+						<td><input type="text" name="<?php echo esc_attr( $field( $i, 'name' ) ); ?>" value="<?php echo esc_attr( $lane['name'] ?? '' ); ?>" maxlength="32" size="10" placeholder="<?php echo empty( $lane ) ? esc_attr__( 'New lane', 'fsbhoa-ac-vehicle' ) : ''; ?>" /></td>
+						<?php if ( $spec['account'] ) : ?>
+							<td><input type="text" name="<?php echo esc_attr( $field( $i, 'ram_account' ) ); ?>" value="<?php echo esc_attr( $lane['ram_account'] ?? '' ); ?>" size="16" /></td>
+						<?php endif; ?>
+						<?php foreach ( array_keys( $spec['devices'] ) as $key ) : ?>
+							<td><input type="text" class="code" name="<?php echo esc_attr( $field( $i, $key ) ); ?>" value="<?php echo esc_attr( $lane[ $key ] ?? '' ); ?>" size="14" /></td>
+						<?php endforeach; ?>
+					</tr>
+				<?php endforeach; ?>
+			</tbody>
+		</table>
+		<p class="description">
+			<?php
+			if ( $spec['account'] ) {
+				esc_html_e( 'One row per entrance lane; each has its own DoorKing controller, loop sensor and cameras. The name is the gate shown in the vehicle log and on the monitor. The RAM account is the account name exactly as RAM sends it (as in RAM\'s account list); it is how a DoorKing record is matched to its lane. The addresses are the devices\' IP addresses: only they may call vehicle_service\'s webhooks, and the address tells which lane a call is from.', 'fsbhoa-ac-vehicle' );
+			} else {
+				esc_html_e( 'One row per exit lane. Exit lanes have no DoorKing controller or loop sensor; every plate read on one is logged as a vehicle leaving, under the lane\'s name. A car may enter at any entrance and leave at any exit, so exits aren\'t tied to an entrance. The name may repeat an entrance\'s name (e.g. South). The overview camera is optional.', 'fsbhoa-ac-vehicle' );
+			}
+			echo ' ';
+			esc_html_e( 'Fill in the blank row to add a lane; clear a lane\'s name to remove it. A device address may be used only once, in either table.', 'fsbhoa-ac-vehicle' );
+			?>
+		</p>
+		<?php
+	}
+
+	/**
 	 * Splits a saved comma-delimited list into an array for vehicle_service.json.
 	 */
 	private static function ip_list_array( $value ) {
@@ -293,7 +489,7 @@ class FSBHOA_Vehicle_Settings {
 	}
 
 	public function render_sources_section_description() {
-		echo '<p>' . esc_html__( 'The gate devices allowed to send inputs to vehicle_service. Every input they send is recorded in the raw-input journal (/var/lib/fsbhoa/vehicle_journal). These lists stand in for the per-lane gate settings until those are built. This server itself is always allowed. Changes apply as soon as the settings are saved, without restarting vehicle_service (a restart would drop the RAM connections).', 'fsbhoa-ac-vehicle' ) . '</p>';
+		echo '<p>' . esc_html__( 'The entrance and exit lanes, and the devices allowed to send inputs to vehicle_service. Every input is recorded in the raw-input journal (/var/lib/fsbhoa/vehicle_journal), tagged with its lane. This server itself is always allowed. Changes apply as soon as the settings are saved, without restarting vehicle_service (a restart would drop the RAM connection).', 'fsbhoa-ac-vehicle' ) . '</p>';
 	}
 
 	public function render_ip_list_field( $args ) {
@@ -313,7 +509,7 @@ class FSBHOA_Vehicle_Settings {
 	}
 
 	public function render_daemon_section_description() {
-		echo '<p>' . esc_html__( 'Connection settings for communicating with the local Go service daemon for health status, queue inspection, and live state.', 'fsbhoa-ac-vehicle' ) . '</p>';
+		echo '<p>' . esc_html__( 'vehicle_service runs on this machine and listens on two ports, on all interfaces. Changing a port takes effect when vehicle_service is restarted (sudo systemctl restart fsbhoa_vehicle); the devices pointing at the old port must be changed too.', 'fsbhoa-ac-vehicle' ) . '</p>';
 	}
 
 	public function render_policy_section_description() {
@@ -371,7 +567,23 @@ class FSBHOA_Vehicle_Settings {
 				 min="1" 
 				 max="65535" />
 		<p class="description">
-			<?php esc_html_e( 'HTTP control/telemetry port of the Go daemon (default: 8088).', 'fsbhoa-ac-vehicle' ); ?>
+			<?php esc_html_e( 'HTTP port (default 8088). The gate devices call in here: each loop sensor Shelly\'s webhook (/webhook/loop?state=on or off), and cameras if they push. Only the lane tables\' device addresses may call. This page reads vehicle_service\'s health here, and the RAM PC\'s DK_Sync.ahk reads /ram-status here.', 'fsbhoa-ac-vehicle' ); ?>
+		</p>
+		<?php
+	}
+
+	public function render_ram_port_field() {
+		$options = self::get_options();
+		?>
+		<input type="number"
+				 id="fsbhoa_vehicle_ram_port"
+				 name="<?php echo esc_attr( self::OPTION_NAME . '[ram_port]' ); ?>"
+				 value="<?php echo esc_attr( $options['ram_port'] ); ?>"
+				 class="small-text code"
+				 min="1"
+				 max="65535" />
+		<p class="description">
+			<?php esc_html_e( 'TCP port (default 8089) that DoorKing RAM\'s Live Streaming connects to. Each RAM account\'s Live Streaming target (IP Address, Raw Text format) must be this server\'s address and this port. Only the RAM Stream Sources addresses may connect.', 'fsbhoa-ac-vehicle' ); ?>
 		</p>
 		<?php
 	}
@@ -407,6 +619,20 @@ class FSBHOA_Vehicle_Settings {
 		<p class="description">
 			<?php esc_html_e( 'Plate and scene photos older than this are deleted every night at 03:05. The event rows (plate text, credential, time) are kept.', 'fsbhoa-ac-vehicle' ); ?>
 		</p>
+		<?php
+	}
+
+	public function render_doorking_events_field() {
+		$options = self::get_options();
+		?>
+		<label for="fsbhoa_vehicle_doorking_events">
+			<input type="checkbox"
+				 id="fsbhoa_vehicle_doorking_events"
+				 name="<?php echo esc_attr( self::OPTION_NAME . '[doorking_events]' ); ?>"
+				 value="1"
+				 <?php checked( 1, $options['doorking_events'] ); ?> />
+			<?php esc_html_e( 'Log each DoorKing authentication (windshield tag or gate code) as a vehicle event on its own, without a loop or plate, so it shows in the vehicle log and on the monitor at once. Repeat reads of a tag sitting at the reader count once. A stopgap until loop and plate correlation is built; leave it off in production. Applied without a restart.', 'fsbhoa-ac-vehicle' ); ?>
+		</label>
 		<?php
 	}
 
@@ -486,8 +712,9 @@ class FSBHOA_Vehicle_Settings {
 	 * Shows whether DoorKing RAM is connected, and when each kind of input last arrived.
 	 *
 	 * RAM doesn't reconnect by itself after its connection drops (a restart of
-	 * vehicle_service, a reboot, a network break); it reconnects only when it starts its next
-	 * job. Until then no live transactions arrive, so a missing connection is an error.
+	 * vehicle_service, a reboot, a network break); the RAM PC's DK_Sync.ahk restarts RAM,
+	 * which connects when it starts. Until then no live transactions arrive, so a missing
+	 * connection is an error.
 	 *
 	 * @param array $health The decoded /health response.
 	 */
@@ -529,7 +756,7 @@ class FSBHOA_Vehicle_Settings {
 				</ul>
 			<?php elseif ( $expected ) : ?>
 				<p>
-					<?php esc_html_e( "No RAM connection is open, so live DoorKing transactions are not being received. RAM does not reconnect by itself: it reconnects when it next starts a job (for example Send Time, or a transaction download). Transactions in between are still in RAM's own history.", 'fsbhoa-ac-vehicle' ); ?>
+					<?php esc_html_e( "No RAM connection is open, so live DoorKing transactions are not being received. RAM does not reconnect by itself, but it connects when it starts: the RAM PC's DK_Sync.ahk script restarts RAM within seconds when its StreamStatusUrl setting points here. If this lasts, check that the script and RAM are running. Transactions in between are still in RAM's own history.", 'fsbhoa-ac-vehicle' ); ?>
 				</p>
 			<?php else : ?>
 				<p><?php esc_html_e( 'No RAM stream sources are configured (Gate Devices, below).', 'fsbhoa-ac-vehicle' ); ?></p>
@@ -582,13 +809,16 @@ class FSBHOA_Vehicle_Settings {
 		$config = array(
 			'daemon_host'          => sanitize_text_field( $options['daemon_host'] ?? '127.0.0.1' ),
 			'daemon_port'          => absint( $options['daemon_port'] ?? 8088 ),
+			'ram_port'             => absint( $options['ram_port'] ?? 8089 ),
 			'api_key'              => get_option( 'fsbhoa_ac_verify_api_key', '' ),
 			'correlation_window'   => absint( $options['correlation_window'] ?? 15 ),
 			'enable_debug_logging' => ! empty( $options['enable_debug_logging'] ) ? 1 : 0,
+			'doorking_events'      => ! empty( $options['doorking_events'] ),
 			'wordpress_host'       => sanitize_text_field( $wp_host ? $wp_host : '127.0.0.1' ),
 			'environment'          => sanitize_text_field( $environment ),
 			'ram_sources'          => self::ip_list_array( $options['ram_sources'] ?? '' ),
-			'device_sources'       => self::ip_list_array( $options['device_sources'] ?? '' ),
+			'gates'                => array_values( is_array( $options['gates'] ?? null ) ? $options['gates'] : array() ),
+			'exit_lanes'           => array_values( is_array( $options['exit_lanes'] ?? null ) ? $options['exit_lanes'] : array() ),
 		);
 
 		$json_data = json_encode($config, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES );
