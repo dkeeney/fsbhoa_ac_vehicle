@@ -93,4 +93,4 @@ Items 6, 9, 10 and 11 come down to one redesign: keep one in-progress event per 
 ## RAM stream
 
 - [x] **30. A `vehicle_service` restart cuts RAM's Live Streaming.** RAM reconnects only when it starts its next job, so each restart (an install, a crash) stopped the stream until `DK_Sync.ahk` restarted RAM. Done 2026-10-13: systemd holds the RAM listener and connections across restarts (`CLAUDE.md`, "RAM connection hold"); `rebuild.sh install` now restarts instead of stopping and starting. Tested with a loopback connection on the testbed.
-  - Still to check with RAM itself: with RAM streaming, run `./rebuild.sh install` and confirm the settings page still shows RAM's connection and a swipe after the restart reaches the journal.
+  - Checked with RAM on 2026-10-13: after a restart of `vehicle_service`, a fob swipe at the workbench DoorKing still reached the live monitor. After a stop and start (as a reboot would), `DK_Sync.ahk` restarted RAM and the stream was back 12 seconds after the service started; a swipe then reached the monitor too.
