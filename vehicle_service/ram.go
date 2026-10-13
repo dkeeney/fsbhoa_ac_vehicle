@@ -212,8 +212,11 @@ type RAMListener struct {
 	gates   atomic.Pointer[Gates]   // RAM account -> entrance lane, for tagging records
 	events  *DoorKingEvents         // optional: authentications sent as events on their own
 	store   *FDStore                // holds the listener and connections across restarts
-	journal *Journal
-	debugf  func(string, ...interface{})
+	// fileSource: records come from RAM's Disk File (ramfile.go); the stream only shows
+	// that RAM is connected. Set before Run.
+	fileSource bool
+	journal    *Journal
+	debugf     func(string, ...interface{})
 
 	mu      sync.Mutex
 	streams map[int]*ramStream // open connections, for the health report
@@ -241,6 +244,10 @@ func (l *RAMListener) SetGates(g *Gates) { l.gates.Store(g) }
 
 // SetEvents sets where authentications go as events of their own. Call before Run.
 func (l *RAMListener) SetEvents(e *DoorKingEvents) { l.events = e }
+
+// SetFileSource makes RAM's Disk File the source of records: the stream's records are then
+// only parsed, to show which accounts are connected. Call before Run.
+func (l *RAMListener) SetFileSource(on bool) { l.fileSource = on }
 
 // SetStore sets the systemd file descriptor store that holds the listener and the open
 // connections across restarts. Call before Run; without it nothing is held.
@@ -289,6 +296,101 @@ func (l *RAMListener) Streams() []map[string]interface{} {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i]["connected_at"].(string) < out[j]["connected_at"].(string) })
 	return out
+}
+
+// ramLines turns the lines of RAM's Live Streaming output, from the stream or the Disk File,
+// into records. It assembles XML-format records, and when output is on, collapses floods of
+// identical records, journals each record tagged with its lane, and hands authentications to
+// the DoorKing-only events.
+type ramLines struct {
+	l      *RAMListener
+	tag    map[string]interface{} // added to each journal entry: the stream's "remote", or "source"
+	from   string                 // where the lines come from, for the log
+	output bool                   // false: parse only
+	filter repeatFilter
+	xml    []string // lines of an XML record in progress
+}
+
+// Line takes one line (its CR LF optional) that arrived at the given time, and returns the
+// record it completed, if any.
+func (p *ramLines) Line(line string, at time.Time) (RAMRecord, bool) {
+	line = strings.TrimRight(line, "\r\n")
+	trimmed := strings.TrimSpace(line)
+	if trimmed == "" {
+		return RAMRecord{}, false
+	}
+	// RAM sends each record in the text format on one line, or in XML over several lines,
+	// from <Transaction> to </Transaction>. Both are accepted, so switching the format in
+	// RAM, or someone setting it to XML, can't lose a record.
+	var rec RAMRecord
+	if trimmed == "<Transaction>" || p.xml != nil {
+		if trimmed == "<Transaction>" {
+			p.xml = nil // a new record; anything unfinished before it is dropped
+		}
+		p.xml = append(p.xml, trimmed)
+		if trimmed != "</Transaction>" && len(p.xml) < 50 {
+			return RAMRecord{}, false
+		}
+		rec = ParseRAMXML(p.xml)
+		line = rec.Raw
+		p.xml = nil
+	} else if strings.HasPrefix(trimmed, "<") {
+		// Part of an XML record whose start we missed (seen right after a reconnect)
+		rec = RAMRecord{Raw: line, Format: "xml", Kind: "other"}
+	} else {
+		rec = ParseRAMRecord(line)
+	}
+	if p.output {
+		p.write(rec, line, at)
+	}
+	return rec, true
+}
+
+func (p *ramLines) write(rec RAMRecord, line string, at time.Time) {
+	write, summary := p.filter.Add(line, rec.Kind == "incomplete", at)
+	p.summary(summary)
+	if !write {
+		return
+	}
+	fields := rec.Fields()
+	for k, v := range p.tag {
+		fields[k] = v
+	}
+	gate := p.l.gates.Load().ForAccount(rec.Account)
+	if gate != "" {
+		fields["gate"] = gate
+	}
+	p.l.journal.WriteAt(at, "ram_record", fields)
+	if p.l.events != nil {
+		p.l.events.Handle(rec, gate, at)
+	}
+	if rec.Kind == "credential" {
+		if gate == "" {
+			gate = "no gate"
+		}
+		log.Printf("[RAM] %s (%s) %s %s %s %s", rec.Account, gate, rec.Type, rec.Code, rec.Result, rec.Relay)
+	} else {
+		p.l.debugf("[RAM] %s record: %q", rec.Kind, strings.TrimSpace(line))
+	}
+}
+
+// Flush journals the copies collapsed so far. Call it when the lines end.
+func (p *ramLines) Flush() {
+	if p.output {
+		p.summary(p.filter.Flush())
+	}
+}
+
+func (p *ramLines) summary(s *repeatSummary) {
+	if s == nil {
+		return
+	}
+	fields := map[string]interface{}{"raw": s.raw, "count": s.count, "first": s.first.Local().Format(journalTimeFormat)}
+	for k, v := range p.tag {
+		fields[k] = v
+	}
+	p.l.journal.WriteAt(s.last, "ram_repeat", fields)
+	log.Printf("[RAM] %d identical copies of one record collapsed from %s", s.count, p.from)
 }
 
 // heldListenerName is the listener's name in the file descriptor store.
@@ -455,50 +557,17 @@ func (l *RAMListener) handle(conn net.Conn, held *heldStream) {
 		}
 	}
 
-	var filter repeatFilter
-	writeSummary := func(s *repeatSummary) {
-		if s == nil {
-			return
-		}
-		l.journal.WriteAt(s.last, "ram_repeat", map[string]interface{}{
-			"remote": ip.String(), "raw": s.raw, "count": s.count,
-			"first": s.first.Local().Format(journalTimeFormat),
-		})
-		log.Printf("[RAM] %d identical copies of one record collapsed from %s", s.count, remote)
-	}
-
-	// RAM sends each record in the text format on one line, or in XML over several lines,
-	// from <Transaction> to </Transaction>. Both are accepted, so switching the format in
-	// RAM, or someone setting it to XML, can't lose a record.
-	var xml []string // lines of an XML record in progress
-
+	// When the Disk File is the source of records (ramfile.go), the stream only shows that
+	// RAM is connected, and its records aren't journaled or sent, or each would count twice.
+	lines := &ramLines{l: l, tag: map[string]interface{}{"remote": ip.String()}, from: remote, output: !l.fileSource}
 	scanner := bufio.NewScanner(conn) // splits on LF and drops the CR
 	scanner.Buffer(make([]byte, 4096), 64*1024)
 	for scanner.Scan() {
-		line := scanner.Text()
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" {
+		at := time.Now()
+		rec, ok := lines.Line(scanner.Text(), at)
+		if !ok {
 			continue
 		}
-		var rec RAMRecord
-		if trimmed == "<Transaction>" || xml != nil {
-			if trimmed == "<Transaction>" {
-				xml = nil // a new record; anything unfinished before it is dropped
-			}
-			xml = append(xml, trimmed)
-			if trimmed != "</Transaction>" && len(xml) < 50 {
-				continue
-			}
-			rec = ParseRAMXML(xml)
-			line = rec.Raw
-			xml = nil
-		} else if strings.HasPrefix(trimmed, "<") {
-			// Part of an XML record whose start we missed (seen right after a reconnect)
-			rec = RAMRecord{Raw: line, Format: "xml", Kind: "other"}
-		} else {
-			rec = ParseRAMRecord(line)
-		}
-		at := time.Now()
 		l.mu.Lock()
 		stream.lastRecord = at
 		newAccount := rec.Account != "" && !stream.accounts[rec.Account]
@@ -509,31 +578,8 @@ func (l *RAMListener) handle(conn net.Conn, held *heldStream) {
 		if newAccount {
 			rename()
 		}
-		write, summary := filter.Add(line, rec.Kind == "incomplete", at)
-		writeSummary(summary)
-		if !write {
-			continue
-		}
-		fields := rec.Fields()
-		fields["remote"] = ip.String()
-		gate := l.gates.Load().ForAccount(rec.Account)
-		if gate != "" {
-			fields["gate"] = gate
-		}
-		l.journal.WriteAt(at, "ram_record", fields)
-		if l.events != nil {
-			l.events.Handle(rec, gate, at)
-		}
-		if rec.Kind == "credential" {
-			if gate == "" {
-				gate = "no gate"
-			}
-			log.Printf("[RAM] %s (%s) %s %s %s %s", rec.Account, gate, rec.Type, rec.Code, rec.Result, rec.Relay)
-		} else {
-			l.debugf("[RAM] %s record: %q", rec.Kind, strings.TrimSpace(line))
-		}
 	}
-	writeSummary(filter.Flush())
+	lines.Flush()
 
 	reason := "closed by RAM"
 	if err := scanner.Err(); err != nil {

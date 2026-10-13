@@ -299,6 +299,19 @@ func main() {
 	ram.SetEvents(dkEvents)
 	// systemd holds RAM's listener and connections while this service restarts
 	ram.SetStore(NewFDStore())
+
+	// RAM's Disk File, when set and allowed for this server's environment, is the source of
+	// DoorKing records instead of the stream
+	var ramFile *RAMFile
+	if cfg.RAMFile != "" {
+		if err := ramFileAllowed(cfg.RAMFile, cfg.Environment); err != nil {
+			log.Printf("[CONFIG] WARNING: not reading RAM's Disk File %s: %v. The stream stays the source of DoorKing records.", cfg.RAMFile, err)
+		} else {
+			ramFile = NewRAMFile(cfg.RAMFile, cfg.JournalDir, cfg.JournalDays, ram)
+			ram.SetFileSource(true)
+			go ramFile.Run()
+		}
+	}
 	go ram.Run()
 
 	// Ensure drop directory exists before starting watcher
@@ -361,12 +374,18 @@ func main() {
 		}
 		streams := ram.Streams()
 		w.Header().Set("Content-Type", "application/json")
+		var fileStatus interface{}
+		if ramFile != nil {
+			fileStatus = ramFile.Status()
+		}
 		json.NewEncoder(w).Encode(map[string]interface{}{
+			"ram_file":        fileStatus, // the Disk File reader, when it is the source
 			"service":         "vehicle_service",
 			"status":          "healthy",
 			"uptime":          int64(time.Since(startTime).Seconds()),
 			"ram_connections": len(streams),
 			"ram_streams":     streams,            // each open RAM connection and the accounts it has sent
+			"ram_source":      ramSource(ramFile), // where DoorKing records come from: "stream" or "file"
 			"last_seen":       journal.LastSeen(), // newest journal entry of each kind
 		})
 	}
@@ -430,4 +449,12 @@ func main() {
 	listenAddr := fmt.Sprintf(":%d", cfg.DaemonPort)
 	log.Printf("FSBHOA Vehicle Service listening on %s (Watch: %s, Queue: %s, Journal: %s, Environment: %s)", listenAddr, cfg.WatchDir, cfg.QueueDir, cfg.JournalDir, cfg.Environment)
 	log.Fatal(http.ListenAndServe(listenAddr, mux))
+}
+
+// ramSource names where DoorKing records come from, for the health report.
+func ramSource(f *RAMFile) string {
+	if f != nil {
+		return "file"
+	}
+	return "stream"
 }

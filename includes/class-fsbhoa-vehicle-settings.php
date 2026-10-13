@@ -15,6 +15,10 @@ class FSBHOA_Vehicle_Settings {
 	const OPTION_NAME  = 'fsbhoa_vehicle_options';
 	const PAGE_SLUG    = 'fsbhoa-vehicle-settings';
 
+	// The NAS folder (CIFS mount) holding the DoorKing automation folders; RAM's Disk File goes in
+	// its Live_Testbed or Live_Production folder.
+	const RAM_FILE_BASE_DIR = '/mnt/shared/Automation/DoorKing';
+
     private $vehicle_config_path = '/var/lib/fsbhoa/vehicle_service.json';
 	private static $instance = null;
 
@@ -58,6 +62,7 @@ class FSBHOA_Vehicle_Settings {
 			'enable_debug_logging' => 0,
 			'doorking_events'      => 0,
 			'ram_sources'          => '',
+			'ram_file'             => '',
 			'gates'                => array(),
 			'exit_lanes'           => array(),
 		);
@@ -149,6 +154,15 @@ class FSBHOA_Vehicle_Settings {
 		);
 
 		add_settings_field(
+			'ram_file',
+			__( 'RAM Stream File', 'fsbhoa-ac-vehicle' ),
+			array( $this, 'render_ram_file_field' ),
+			self::PAGE_SLUG,
+			'fsbhoa_vehicle_sources_section',
+			array( 'label_for' => 'fsbhoa_vehicle_ram_file' )
+		);
+
+		add_settings_field(
 			'gates',
 			__( 'Entrance Lanes', 'fsbhoa-ac-vehicle' ),
 			array( $this, 'render_lanes_field' ),
@@ -236,6 +250,7 @@ class FSBHOA_Vehicle_Settings {
 		$sanitized['doorking_events']      = ! empty( $input['doorking_events'] ) ? 1 : 0;
 
 		$sanitized['ram_sources'] = $this->sanitize_ip_list( $input['ram_sources'] ?? '', 'ram_sources' );
+		$sanitized['ram_file']    = $this->sanitize_ram_file( $input['ram_file'] ?? '' );
 		$ips                      = array();
 		$sanitized['gates']       = $this->sanitize_lanes( $input['gates'] ?? array(), 'gates', $ips );
 		$sanitized['exit_lanes']  = $this->sanitize_lanes( $input['exit_lanes'] ?? array(), 'exit_lanes', $ips );
@@ -253,6 +268,51 @@ class FSBHOA_Vehicle_Settings {
 		}
 
 		return $sanitized;
+	}
+
+	/**
+	 * This server's environment (FSBHOA_AC_ENVIRONMENT), or '' if it is missing or unknown.
+	 */
+	private static function environment() {
+		$env = defined( 'FSBHOA_AC_ENVIRONMENT' ) ? strtolower( trim( (string) FSBHOA_AC_ENVIRONMENT ) ) : '';
+		return in_array( $env, array( 'testbed', 'production' ), true ) ? $env : '';
+	}
+
+	/**
+	 * The suggested RAM Stream File path for this server: Live_Testbed or Live_Production
+	 * beside the DoorKing sync folders on the NAS.
+	 */
+	public static function default_ram_file() {
+		$env = self::environment();
+		return self::RAM_FILE_BASE_DIR . '/Live_' . ( $env ? ucfirst( $env ) : 'Unconfigured' ) . '/stream.txt';
+	}
+
+	/**
+	 * Keeps the RAM Stream File path if it is absolute and its folder names this server's
+	 * environment, so a server never reads the other environment's transactions. vehicle_service
+	 * checks the same. Empty turns the file off.
+	 */
+	private function sanitize_ram_file( $value ) {
+		$path = trim( sanitize_text_field( (string) $value ) );
+		if ( '' === $path ) {
+			return '';
+		}
+		$env    = self::environment();
+		$folder = strtolower( basename( dirname( $path ) ) );
+		if ( '/' !== substr( $path, 0, 1 ) || '' === $env || false === strpos( $folder, $env ) ) {
+			add_settings_error(
+				self::OPTION_NAME,
+				'fsbhoa_vehicle_ram_file',
+				sprintf(
+					/* translators: 1: the path entered, 2: the environment */
+					__( 'RAM Stream File %1$s was not saved: it must be a full path whose folder name contains this server\'s environment (%2$s), such as Live_Testbed. The stream stays the source of DoorKing records.', 'fsbhoa-ac-vehicle' ),
+					$path,
+					$env ? $env : __( 'not set in wp-config.php', 'fsbhoa-ac-vehicle' )
+				)
+			);
+			return '';
+		}
+		return $path;
 	}
 
 	/**
@@ -533,6 +593,27 @@ class FSBHOA_Vehicle_Settings {
 		<?php
 	}
 
+	public function render_ram_file_field() {
+		$options = self::get_options();
+		?>
+		<input type="text"
+				 id="fsbhoa_vehicle_ram_file"
+				 name="<?php echo esc_attr( self::OPTION_NAME . '[ram_file]' ); ?>"
+				 value="<?php echo esc_attr( $options['ram_file'] ); ?>"
+				 placeholder="<?php echo esc_attr( self::default_ram_file() ); ?>"
+				 class="large-text code" />
+		<p class="description">
+			<?php
+			printf(
+				/* translators: %s: suggested path */
+				esc_html__( 'Where this server reads RAM\'s Live Streaming "Disk File" (suggested: %s; on the RAM PC that folder is Y:\Automation\DoorKing\Live_...). When set, DoorKing records come from this file instead of the stream: the file keeps recording while vehicle_service or the network is down, and vehicle_service continues where it stopped. In RAM, add a Disk File destination (Raw Text) for each account. The folder name must contain this server\'s environment. vehicle_service renames the file daily (stream_YYYY-MM-DD.txt) and deletes old ones with the journal. Empty: the stream is the source. Restart vehicle_service after changing this.', 'fsbhoa-ac-vehicle' ),
+				'<code>' . esc_html( self::default_ram_file() ) . '</code>'
+			);
+			?>
+		</p>
+		<?php
+	}
+
 	public function render_correlation_field() {
 		$options = self::get_options();
 		?>
@@ -653,6 +734,9 @@ class FSBHOA_Vehicle_Settings {
 		$uptime    = isset( $health['uptime'] ) ? absint( $health['uptime'] ) : 0;
 		$options   = self::get_options();
 		$expected  = '' !== trim( (string) $options['ram_sources'] );
+		// With the Disk File as the source, the stream only shows that RAM is running
+		$file      = ( 'file' === ( $health['ram_source'] ?? '' ) && is_array( $health['ram_file'] ?? null ) ) ? $health['ram_file'] : null;
+		$problem   = $file ? ! empty( $file['error'] ) : ( $expected && ! $streams );
 
 		$format = function ( $iso ) {
 			$ts = strtotime( (string) $iso );
@@ -663,8 +747,26 @@ class FSBHOA_Vehicle_Settings {
 			return sprintf( __( '%1$s (%2$s ago)', 'fsbhoa-ac-vehicle' ), wp_date( 'M j, g:i:s a', $ts ), human_time_diff( $ts ) );
 		};
 		?>
-		<div class="notice notice-<?php echo ( $streams || ! $expected ) ? 'info' : 'error'; ?> inline" style="margin: 15px 0;">
+		<div class="notice notice-<?php echo $problem ? 'error' : 'info'; ?> inline" style="margin: 15px 0;">
 			<p><strong><?php esc_html_e( 'DoorKing RAM Live Streaming', 'fsbhoa-ac-vehicle' ); ?></strong></p>
+			<?php if ( $file ) : ?>
+				<p>
+					<?php
+					printf(
+						/* translators: 1: file path, 2: last record time, 3: last read time */
+						esc_html__( 'Records come from the Disk File %1$s. Last record read: %2$s. Last checked: %3$s.', 'fsbhoa-ac-vehicle' ),
+						'<code>' . esc_html( $file['path'] ?? '' ) . '</code>',
+						esc_html( ! empty( $file['last_record_at'] ) ? $format( $file['last_record_at'] ) : __( 'none since vehicle_service started', 'fsbhoa-ac-vehicle' ) ),
+						esc_html( ! empty( $file['last_poll_at'] ) ? $format( $file['last_poll_at'] ) : __( 'not yet', 'fsbhoa-ac-vehicle' ) )
+					);
+					?>
+				</p>
+				<?php if ( ! empty( $file['error'] ) ) : ?>
+					<p><strong><?php esc_html_e( 'Cannot read the file:', 'fsbhoa-ac-vehicle' ); ?></strong> <code><?php echo esc_html( $file['error'] ); ?></code> <?php esc_html_e( 'vehicle_service retries twice a second and continues where it stopped, so nothing is lost while RAM keeps writing it.', 'fsbhoa-ac-vehicle' ); ?></p>
+				<?php endif; ?>
+			<?php elseif ( '' !== ( $options['ram_file'] ?? '' ) ) : ?>
+				<p><strong><?php esc_html_e( 'The RAM Stream File is set but vehicle_service is not reading it.', 'fsbhoa-ac-vehicle' ); ?></strong> <?php esc_html_e( 'Restart vehicle_service after changing it; if it still isn\'t read, its log says why (journalctl -u fsbhoa_vehicle).', 'fsbhoa-ac-vehicle' ); ?></p>
+			<?php endif; ?>
 			<?php if ( $streams ) : ?>
 				<ul style="list-style: disc; margin-left: 20px;">
 					<?php foreach ( $streams as $stream ) : ?>
@@ -683,6 +785,8 @@ class FSBHOA_Vehicle_Settings {
 						</li>
 					<?php endforeach; ?>
 				</ul>
+			<?php elseif ( $file ) : ?>
+				<p><?php esc_html_e( 'No stream connection is open. It isn\'t needed for records, which come from the file; an open one shows that RAM is running.', 'fsbhoa-ac-vehicle' ); ?></p>
 			<?php elseif ( $expected ) : ?>
 				<p>
 					<?php esc_html_e( "No RAM connection is open, so live DoorKing transactions are not being received. RAM does not reconnect by itself, but it connects when it starts: the RAM PC's DK_Sync.ahk script restarts RAM within seconds when its StreamStatusUrl setting points here. If this lasts, check that the script and RAM are running. Transactions in between are still in RAM's own history.", 'fsbhoa-ac-vehicle' ); ?>
@@ -746,6 +850,7 @@ class FSBHOA_Vehicle_Settings {
 			'wordpress_host'       => sanitize_text_field( $wp_host ? $wp_host : '127.0.0.1' ),
 			'environment'          => sanitize_text_field( $environment ),
 			'ram_sources'          => self::ip_list_array( $options['ram_sources'] ?? '' ),
+			'ram_file'             => sanitize_text_field( $options['ram_file'] ?? '' ),
 			'gates'                => array_values( is_array( $options['gates'] ?? null ) ? $options['gates'] : array() ),
 			'exit_lanes'           => array_values( is_array( $options['exit_lanes'] ?? null ) ? $options['exit_lanes'] : array() ),
 		);

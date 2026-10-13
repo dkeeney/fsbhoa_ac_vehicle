@@ -74,5 +74,6 @@ func restartNeeded(old, cur *ServiceConfig) []string {
 	check("queue_dir", old.QueueDir != cur.QueueDir)
 	check("journal_dir", old.JournalDir != cur.JournalDir)
 	check("journal_days", old.JournalDays != cur.JournalDays)
+	check("ram_file", old.RAMFile != cur.RAMFile)
 	return changed
 }

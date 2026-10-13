@@ -29,6 +29,9 @@ type ServiceConfig struct {
 	DoorKingEvents bool             `json:"doorking_events"` // send DoorKing authentications as events on their own (stopgap)
 	JournalDir     string           `json:"journal_dir"`     // raw-input journal, one file per day
 	JournalDays    int              `json:"journal_days"`    // journal files kept this many days
+	// RAM's Live Streaming Disk File (ramfile.go). Set: it is the source of DoorKing records,
+	// and the stream only shows that RAM is connected. Empty: the stream is the source.
+	RAMFile string `json:"ram_file"`
 
 	// Local runtime fields (not in JSON, populated via flags/defaults)
 	WatchDir       string        `json:"-"`
