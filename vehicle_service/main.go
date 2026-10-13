@@ -297,6 +297,8 @@ func main() {
 	ram.SetGates(NewGates(cfg.Gates, cfg.ExitLanes))
 	dkEvents := NewDoorKingEvents(dispatcher, cfg.DoorKingEvents)
 	ram.SetEvents(dkEvents)
+	// systemd holds RAM's listener and connections while this service restarts
+	ram.SetStore(NewFDStore())
 	go ram.Run()
 
 	// Ensure drop directory exists before starting watcher
@@ -324,7 +326,7 @@ func main() {
 	setGates(cfg)
 
 	// Saving the vehicle settings rewrites the config file. Apply the address lists without
-	// a restart, which would drop the RAM connections (RAM reconnects only on its next job).
+	// a restart (systemd holds the RAM connections across one, but there's no need for it).
 	go WatchConfig(*configPath, func(next *ServiceConfig) {
 		ram.SetSources(NewSources(next.RAMSources))
 		setGates(next)

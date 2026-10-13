@@ -9,9 +9,9 @@ import (
 )
 
 // WatchConfig re-reads the config file whenever WordPress rewrites it (it writes a temp
-// file and renames it into place), and calls apply with the new config. A restart would
-// drop the RAM connections, and RAM reconnects only when it next starts a job, so settings
-// that can change without one are applied this way.
+// file and renames it into place), and calls apply with the new config. Settings that can
+// change without a restart are applied this way. (A restart once dropped the RAM
+// connections; systemd now holds them across one, see fdstore.go.)
 func WatchConfig(path string, apply func(*ServiceConfig)) {
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {

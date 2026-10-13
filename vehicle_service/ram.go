@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 )
 
@@ -210,6 +211,7 @@ type RAMListener struct {
 	sources atomic.Pointer[Sources] // replaced when the config file changes
 	gates   atomic.Pointer[Gates]   // RAM account -> entrance lane, for tagging records
 	events  *DoorKingEvents         // optional: authentications sent as events on their own
+	store   *FDStore                // holds the listener and connections across restarts
 	journal *Journal
 	debugf  func(string, ...interface{})
 
@@ -227,7 +229,7 @@ type ramStream struct {
 }
 
 func NewRAMListener(port int, sources Sources, journal *Journal, debugf func(string, ...interface{})) *RAMListener {
-	l := &RAMListener{port: port, journal: journal, debugf: debugf, streams: map[int]*ramStream{}}
+	l := &RAMListener{port: port, journal: journal, debugf: debugf, streams: map[int]*ramStream{}, store: &FDStore{}}
 	l.SetSources(sources)
 	l.SetGates(NewGates(nil, nil))
 	return l
@@ -239,6 +241,10 @@ func (l *RAMListener) SetGates(g *Gates) { l.gates.Store(g) }
 
 // SetEvents sets where authentications go as events of their own. Call before Run.
 func (l *RAMListener) SetEvents(e *DoorKingEvents) { l.events = e }
+
+// SetStore sets the systemd file descriptor store that holds the listener and the open
+// connections across restarts. Call before Run; without it nothing is held.
+func (l *RAMListener) SetStore(s *FDStore) { l.store = s }
 
 // Allowed reports whether a remote address is a configured RAM stream source.
 func (l *RAMListener) Allowed(hostport string) bool { return l.sources.Load().Allowed(hostport) }
@@ -285,8 +291,11 @@ func (l *RAMListener) Streams() []map[string]interface{} {
 	return out
 }
 
+// heldListenerName is the listener's name in the file descriptor store.
+const heldListenerName = "ram-listener"
+
 func (l *RAMListener) Run() {
-	ln, err := net.Listen("tcp", fmt.Sprintf(":%d", l.port))
+	ln, err := l.listen()
 	if err != nil {
 		log.Printf("[ERROR] DoorKing listener could not start on port %d: %v", l.port, err)
 		return
@@ -294,8 +303,65 @@ func (l *RAMListener) Run() {
 	if len(*l.sources.Load()) == 0 {
 		log.Printf("[CONFIG] WARNING: no RAM stream sources configured; only this machine may connect to port %d", l.port)
 	}
-	log.Printf("DoorKing RAM listener on port %d", l.port)
+	l.resumeHeld()
+	l.store.ReleaseUntaken()
 	l.serve(ln)
+}
+
+// listen takes back the listener systemd held across the restart, or opens a new one and
+// hands it to systemd. While this service restarts, systemd's copy keeps the port open, so
+// RAM's new connections wait to be accepted instead of being refused.
+func (l *RAMListener) listen() (net.Listener, error) {
+	for _, files := range l.store.Take(heldListenerName) {
+		for _, f := range files {
+			ln, err := net.FileListener(f)
+			f.Close()
+			if err != nil {
+				log.Printf("[FDSTORE] Held RAM listener unusable: %v", err)
+				continue
+			}
+			if a, ok := ln.Addr().(*net.TCPAddr); ok && a.Port == l.port {
+				log.Printf("DoorKing RAM listener on port %d (held across the restart)", l.port)
+				return ln, nil
+			}
+			ln.Close() // ram_port changed
+		}
+		l.store.Remove(heldListenerName)
+	}
+
+	ln, err := net.Listen("tcp", fmt.Sprintf(":%d", l.port))
+	if err != nil {
+		return nil, err
+	}
+	if tl, ok := ln.(*net.TCPListener); ok {
+		if err := l.store.Store(heldListenerName, tl); err != nil {
+			log.Printf("[FDSTORE] Could not hold the RAM listener: %v", err)
+		}
+	}
+	log.Printf("DoorKing RAM listener on port %d", l.port)
+	return ln, nil
+}
+
+// resumeHeld goes on reading the RAM connections that systemd held across the restart.
+func (l *RAMListener) resumeHeld() {
+	for name, files := range l.store.Take(heldStreamPrefix) {
+		held, ok := parseHeldStream(name)
+		for _, f := range files {
+			conn, err := net.FileConn(f)
+			f.Close()
+			if err != nil || !ok {
+				if conn != nil {
+					conn.Close()
+				}
+				log.Printf("[FDSTORE] Dropped held RAM connection %q (name unreadable or socket unusable: %v)", name, err)
+				l.store.Remove(name)
+				continue
+			}
+			h := held
+			h.name = name
+			go l.handle(conn, &h)
+		}
+	}
 }
 
 func (l *RAMListener) serve(ln net.Listener) {
@@ -309,21 +375,45 @@ func (l *RAMListener) serve(ln net.Listener) {
 			time.Sleep(time.Second)
 			continue
 		}
-		go l.handle(conn)
+		go l.handle(conn, nil)
 	}
 }
 
-func (l *RAMListener) handle(conn net.Conn) {
+// handle reads one RAM connection until it closes. held is set for a connection that
+// systemd held across a restart, and carries when it opened and its accounts.
+func (l *RAMListener) handle(conn net.Conn, held *heldStream) {
 	defer conn.Close()
 	remote := conn.RemoteAddr().String()
 	ip, _ := remoteAddr(remote)
 	if !l.sources.Load().Allowed(remote) {
 		log.Printf("[WARN] Refused DoorKing connection from %s: not a configured RAM stream source", remote)
 		l.journal.Write("ram_refused", map[string]interface{}{"remote": ip.String()})
+		if held != nil {
+			l.store.Remove(held.name)
+		}
 		return
 	}
 
+	resumed := held != nil
+
 	stream := &ramStream{remote: ip.String(), connectedAt: time.Now(), accounts: map[string]bool{}}
+	if held != nil {
+		stream.connectedAt = time.UnixMilli(held.Since)
+		for _, a := range held.Accounts {
+			stream.accounts[a] = true
+		}
+	} else {
+		held = &heldStream{ID: time.Now().UnixNano(), Since: stream.connectedAt.UnixMilli()}
+		if sc, ok := conn.(syscall.Conn); ok {
+			if err := l.store.Store(held.Name(), sc); err != nil {
+				log.Printf("[FDSTORE] Could not hold the RAM connection from %s: %v", remote, err)
+			}
+		}
+	}
+	heldName := held.name
+	if heldName == "" {
+		heldName = held.Name()
+	}
 	l.mu.Lock()
 	id := l.nextID
 	l.nextID++
@@ -333,9 +423,37 @@ func (l *RAMListener) handle(conn net.Conn) {
 		l.mu.Lock()
 		delete(l.streams, id)
 		l.mu.Unlock()
+		l.store.Remove(heldName) // RAM closed it: systemd must not hold it any longer
 	}()
-	log.Printf("[RAM] Connected: %s", remote)
-	l.journal.Write("ram_connect", map[string]interface{}{"remote": ip.String()})
+	if resumed {
+		log.Printf("[RAM] Resumed after a restart: %s (connected since %s, accounts %v)", remote, stream.connectedAt.Local().Format(journalTimeFormat), held.Accounts)
+		l.journal.Write("ram_resume", map[string]interface{}{"remote": ip.String(), "connected_at": stream.connectedAt.Local().Format(journalTimeFormat), "accounts": held.Accounts})
+	} else {
+		log.Printf("[RAM] Connected: %s", remote)
+		l.journal.Write("ram_connect", map[string]interface{}{"remote": ip.String()})
+	}
+
+	// A new account goes into the held connection's name, so a restart keeps it (heldStream)
+	rename := func() {
+		l.mu.Lock()
+		held.Accounts = held.Accounts[:0]
+		for a := range stream.accounts {
+			held.Accounts = append(held.Accounts, a)
+		}
+		l.mu.Unlock()
+		sort.Strings(held.Accounts)
+		sc, ok := conn.(syscall.Conn)
+		next := held.Name()
+		if !ok || next == heldName {
+			return
+		}
+		// Remove first: systemd ignores a socket it already holds, even under another name
+		l.store.Remove(heldName)
+		heldName = next
+		if err := l.store.Store(next, sc); err != nil {
+			log.Printf("[FDSTORE] Could not update the held RAM connection from %s: %v", remote, err)
+		}
+	}
 
 	var filter repeatFilter
 	writeSummary := func(s *repeatSummary) {
@@ -383,10 +501,14 @@ func (l *RAMListener) handle(conn net.Conn) {
 		at := time.Now()
 		l.mu.Lock()
 		stream.lastRecord = at
-		if rec.Account != "" {
+		newAccount := rec.Account != "" && !stream.accounts[rec.Account]
+		if newAccount {
 			stream.accounts[rec.Account] = true
 		}
 		l.mu.Unlock()
+		if newAccount {
+			rename()
+		}
 		write, summary := filter.Add(line, rec.Kind == "incomplete", at)
 		writeSummary(summary)
 		if !write {

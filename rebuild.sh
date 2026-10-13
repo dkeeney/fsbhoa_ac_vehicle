@@ -19,19 +19,20 @@ if [ $? -eq 0 ]; then echo "   [OK] fsbhoa_vehicle built"; else echo "   [FAIL] 
 if [ "$1" == "install" ]; then
     echo ""
     echo "--- Installing and Restarting Services (Sudo Required) ---"
-    
-    # 1. STOP services to release the file lock
-    echo "Stopping services..."
-    sudo systemctl stop fsbhoa_vehicle
-    
-    # 2. COPY new binaries
+
+    # The service keeps running until the restart in step 5: a stop would release the RAM
+    # connections systemd holds for it (CLAUDE.md, "RAM connection hold"), and RAM would
+    # stop streaming until its next job.
+
+    # 1-2. COPY the new binary beside the running one, then rename it into place
     echo "Copying binaries..."
-    sudo cp "$BASE_DIR/vehicle_service/fsbhoa_vehicle" /usr/local/bin/
-    
+    sudo cp "$BASE_DIR/vehicle_service/fsbhoa_vehicle" /usr/local/bin/fsbhoa_vehicle.new
+
     # 3. SET PERMISSIONS (Root ownership is safer for system binaries)
     echo "Setting permissions..."
-    sudo chown root:root /usr/local/bin/fsbhoa_*
-    sudo chmod 755 /usr/local/bin/fsbhoa_*
+    sudo chown root:root /usr/local/bin/fsbhoa_vehicle.new
+    sudo chmod 755 /usr/local/bin/fsbhoa_vehicle.new
+    sudo mv -f /usr/local/bin/fsbhoa_vehicle.new /usr/local/bin/fsbhoa_vehicle
 
     # 4. INSTALL the systemd unit if it is new or changed
     UNIT_SRC="$BASE_DIR/vehicle_service/fsbhoa_vehicle.service"
@@ -43,9 +44,9 @@ if [ "$1" == "install" ]; then
         sudo systemctl enable fsbhoa_vehicle
     fi
     
-    # 5. START services
-    echo "Starting Systemd Services..."
-    sudo systemctl start fsbhoa_vehicle
+    # 5. RESTART (a restart keeps the held RAM connections; it also starts a stopped service)
+    echo "Restarting Systemd Services..."
+    sudo systemctl restart fsbhoa_vehicle
     
     echo "--- Install Complete ---"
     # Brief pause to let them startup before checking status

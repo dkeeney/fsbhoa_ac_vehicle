@@ -54,9 +54,7 @@ class FSBHOA_Vehicle_Settings {
 			'daemon_host'          => '127.0.0.1',
 			'daemon_port'          => 8088,
 			'ram_port'             => 8089,
-			'allowed_daemon_ips'   => '127.0.0.1, ::1',
 			'correlation_window'   => 15,
-			'image_retention_days' => 90,
 			'enable_debug_logging' => 0,
 			'doorking_events'      => 0,
 			'ram_sources'          => '',
@@ -83,7 +81,7 @@ class FSBHOA_Vehicle_Settings {
 
 		add_settings_section(
 			'fsbhoa_vehicle_ingest_section',
-			__( 'Daemon Ingestion & REST Authentication', 'fsbhoa-ac-vehicle' ),
+			__( 'REST Authentication', 'fsbhoa-ac-vehicle' ),
 			array( $this, 'render_ingest_section_description' ),
 			self::PAGE_SLUG
 		);
@@ -94,15 +92,6 @@ class FSBHOA_Vehicle_Settings {
 			array( $this, 'render_api_key_status_field' ),
 			self::PAGE_SLUG,
 			'fsbhoa_vehicle_ingest_section'
-		);
-
-		add_settings_field(
-			'allowed_daemon_ips',
-			__( 'Allowed Daemon IPs', 'fsbhoa-ac-vehicle' ),
-			array( $this, 'render_allowed_ips_field' ),
-			self::PAGE_SLUG,
-			'fsbhoa_vehicle_ingest_section',
-			array( 'label_for' => 'fsbhoa_vehicle_allowed_ips' )
 		);
 
 		add_settings_section(
@@ -179,7 +168,7 @@ class FSBHOA_Vehicle_Settings {
 
 		add_settings_section(
 			'fsbhoa_vehicle_policy_section',
-			__( 'Correlation Window & Retention', 'fsbhoa-ac-vehicle' ),
+			__( 'Correlation & Logging', 'fsbhoa-ac-vehicle' ),
 			array( $this, 'render_policy_section_description' ),
 			self::PAGE_SLUG
 		);
@@ -191,15 +180,6 @@ class FSBHOA_Vehicle_Settings {
 			self::PAGE_SLUG,
 			'fsbhoa_vehicle_policy_section',
 			array( 'label_for' => 'fsbhoa_vehicle_correlation_window' )
-		);
-
-		add_settings_field(
-			'image_retention_days',
-			__( 'Image Retention (days)', 'fsbhoa-ac-vehicle' ),
-			array( $this, 'render_retention_field' ),
-			self::PAGE_SLUG,
-			'fsbhoa_vehicle_policy_section',
-			array( 'label_for' => 'fsbhoa_vehicle_retention_days' )
 		);
 
 		add_settings_field(
@@ -245,32 +225,11 @@ class FSBHOA_Vehicle_Settings {
 			$sanitized['ram_port'] = 8088 === $sanitized['daemon_port'] ? 8089 : $defaults['ram_port'];
 		}
 
-		if ( isset( $input['allowed_daemon_ips'] ) ) {
-			$ips = explode( ',', sanitize_text_field( $input['allowed_daemon_ips'] ) );
-			$cleaned_ips = array();
-			foreach ( $ips as $ip ) {
-				$trimmed = trim( $ip );
-				if ( ! empty( $trimmed ) ) {
-					$cleaned_ips[] = $trimmed;
-				}
-			}
-			$sanitized['allowed_daemon_ips'] = implode( ', ', $cleaned_ips );
-		} else {
-			$sanitized['allowed_daemon_ips'] = $defaults['allowed_daemon_ips'];
-		}
-
 		if ( isset( $input['correlation_window'] ) ) {
 			$window = absint( $input['correlation_window'] );
 			$sanitized['correlation_window'] = ( $window >= 3 && $window <= 120 ) ? $window : $defaults['correlation_window'];
 		} else {
 			$sanitized['correlation_window'] = $defaults['correlation_window'];
-		}
-
-		if ( isset( $input['image_retention_days'] ) ) {
-			$days = absint( $input['image_retention_days'] );
-			$sanitized['image_retention_days'] = ( $days >= 1 && $days <= 730 ) ? $days : $defaults['image_retention_days'];
-		} else {
-			$sanitized['image_retention_days'] = $defaults['image_retention_days'];
 		}
 
 		$sanitized['enable_debug_logging'] = ! empty( $input['enable_debug_logging'] ) ? 1 : 0;
@@ -489,7 +448,7 @@ class FSBHOA_Vehicle_Settings {
 	}
 
 	public function render_sources_section_description() {
-		echo '<p>' . esc_html__( 'The entrance and exit lanes, and the devices allowed to send inputs to vehicle_service. Every input is recorded in the raw-input journal (/var/lib/fsbhoa/vehicle_journal), tagged with its lane. This server itself is always allowed. Changes apply as soon as the settings are saved, without restarting vehicle_service (a restart would drop the RAM connection).', 'fsbhoa-ac-vehicle' ) . '</p>';
+		echo '<p>' . esc_html__( 'The entrance and exit lanes, and the devices allowed to send inputs to vehicle_service. Every input is recorded in the raw-input journal (/var/lib/fsbhoa/vehicle_journal), tagged with its lane. This server itself is always allowed. Changes apply as soon as the settings are saved, without restarting vehicle_service.', 'fsbhoa-ac-vehicle' ) . '</p>';
 	}
 
 	public function render_ip_list_field( $args ) {
@@ -505,7 +464,7 @@ class FSBHOA_Vehicle_Settings {
 	}
 
 	public function render_ingest_section_description() {
-		echo '<p>' . esc_html__( 'Authentication and IP restrictions for correlated vehicle events pushed by vehicle_service into the WordPress REST API.', 'fsbhoa-ac-vehicle' ) . '</p>';
+		echo '<p>' . esc_html__( 'vehicle_service posts each finished vehicle event to core\'s vehicle log (POST /vehicle-event), which checks the API key. Photo retention is a Live Monitor setting in core.', 'fsbhoa-ac-vehicle' ) . '</p>';
 	}
 
 	public function render_daemon_section_description() {
@@ -513,7 +472,7 @@ class FSBHOA_Vehicle_Settings {
 	}
 
 	public function render_policy_section_description() {
-		echo '<p>' . esc_html__( 'State machine timing thresholds and local LPR plate image retention policies.', 'fsbhoa-ac-vehicle' ) . '</p>';
+		echo '<p>' . esc_html__( 'State machine timing and what vehicle_service logs.', 'fsbhoa-ac-vehicle' ) . '</p>';
 	}
 
 	public function render_api_key_status_field() {
@@ -524,20 +483,6 @@ class FSBHOA_Vehicle_Settings {
 		</span>
 		<p class="description">
 			<?php esc_html_e( 'vehicle_service sends the Access Verification API Key (FSBHOA AC General settings) as X-API-KEY. It is copied into vehicle_service.json when these settings or the core settings are saved; restart vehicle_service afterwards. Without a key, every vehicle event is refused.', 'fsbhoa-ac-vehicle' ); ?>
-		</p>
-		<?php
-	}
-
-	public function render_allowed_ips_field() {
-		$options = self::get_options();
-		?>
-		<input type="text" 
-				 id="fsbhoa_vehicle_allowed_ips" 
-				 name="<?php echo esc_attr( self::OPTION_NAME . '[allowed_daemon_ips]' ); ?>" 
-				 value="<?php echo esc_attr( $options['allowed_daemon_ips'] ); ?>" 
-				 class="regular-text code" />
-		<p class="description">
-			<?php esc_html_e( 'Comma-delimited IP addresses allowed to post vehicle events to WordPress, in addition to the API key check (e.g. 127.0.0.1, ::1). Leave empty to allow any address that has the key.', 'fsbhoa-ac-vehicle' ); ?>
 		</p>
 		<?php
 	}
@@ -601,23 +546,6 @@ class FSBHOA_Vehicle_Settings {
 		<span><?php esc_html_e( 'seconds', 'fsbhoa-ac-vehicle' ); ?></span>
 		<p class="description">
 			<?php esc_html_e( 'Maximum sliding window elapsed between DoorKing gate activation, loop transition, and Speco LPR capture.', 'fsbhoa-ac-vehicle' ); ?>
-		</p>
-		<?php
-	}
-
-	public function render_retention_field() {
-		$options = self::get_options();
-		?>
-		<input type="number" 
-				 id="fsbhoa_vehicle_retention_days" 
-				 name="<?php echo esc_attr( self::OPTION_NAME . '[image_retention_days]' ); ?>" 
-				 value="<?php echo esc_attr( $options['image_retention_days'] ); ?>" 
-				 class="small-text" 
-				 min="1" 
-				 max="730" />
-		<span><?php esc_html_e( 'days', 'fsbhoa-ac-vehicle' ); ?></span>
-		<p class="description">
-			<?php esc_html_e( 'Plate and scene photos older than this are deleted every night at 03:05. The event rows (plate text, credential, time) are kept.', 'fsbhoa-ac-vehicle' ); ?>
 		</p>
 		<?php
 	}
@@ -711,8 +639,9 @@ class FSBHOA_Vehicle_Settings {
 	/**
 	 * Shows whether DoorKing RAM is connected, and when each kind of input last arrived.
 	 *
-	 * RAM doesn't reconnect by itself after its connection drops (a restart of
-	 * vehicle_service, a reboot, a network break); the RAM PC's DK_Sync.ahk restarts RAM,
+	 * RAM doesn't reconnect by itself after its connection drops (a reboot, a stopped
+	 * vehicle_service, a network break; systemd holds it across a restart of the service,
+	 * see CLAUDE.md "RAM connection hold"); the RAM PC's DK_Sync.ahk restarts RAM,
 	 * which connects when it starts. Until then no live transactions arrive, so a missing
 	 * connection is an error.
 	 *

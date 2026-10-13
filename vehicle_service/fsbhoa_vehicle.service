@@ -12,6 +12,13 @@ ExecStart=/usr/local/bin/fsbhoa_vehicle -config /var/lib/fsbhoa/vehicle_service.
 Restart=always
 RestartSec=3s
 
+# Hold RAM's listener and connections while the service restarts, so RAM's Live Streaming
+# isn't cut (CLAUDE.md, "RAM connection hold"). The service hands the sockets to systemd
+# with sd_notify, which needs NotifyAccess. The store is kept across a restart (systemctl
+# restart, or Restart= after a crash) but released by a stop.
+NotifyAccess=main
+FileDescriptorStoreMax=32
+
 # Standard logging to journald
 StandardOutput=journal
 StandardError=journal

@@ -12,14 +12,15 @@ It combines three inputs:
 From these it builds a composite event that describes one vehicle entry. That event goes to the vehicle access log and to the real-time display.
 
 - **Delivery.** `vehicle_service` posts each finished event to `POST /vehicle-event` on this machine through an on-disk queue (`/var/lib/fsbhoa/vehicle_queue`), so events survive WordPress being down. Events carry the environment and a unique `event_uid`; WordPress refuses the other environment's events and ignores repeats.
-- **Vehicle access log.** This plugin runs its own log, the `ac_vehicle_log` table, separate from core's `ac_access_log`. `POST /vehicle-event` writes to it. The plugin creates and upgrades the table itself (`includes/class-fsbhoa-vehicle-db.php`); bump `DB_VERSION` when the schema changes.
-- **Real-time display.** Vehicle events appear in the left column of core's live monitor ("Vehicle Gate Traffic"). This plugin adds the column and the photo lightbox through core's `fsbhoa_monitor_activity_columns` and `fsbhoa_monitor_modals` hooks (`includes/views/view-monitor-vehicle-column.php`). `assets/js/fsbhoa-vehicle-monitor.js` polls `GET /vehicle-recent` every 3 seconds and fills the column.
+- **Vehicle access log.** Core owns the log (`ac_vehicle_log`), `POST /vehicle-event`, `GET /vehicle-recent` and `GET /vehicle-image/{id}` (`fsbhoa_ac_core/includes/monitor/class-fsbhoa-vehicle-log-rest-api.php`, whose docblock is the payload contract). Schema changes go in core's three schema files.
+- **Real-time display.** Vehicle events appear in the left column of core's live monitor ("Vehicle Gate Traffic"). Core draws the column, the photo lightbox and the script that polls `/vehicle-recent`. This plugin turns them on by returning true from `fsbhoa_monitor_show_vehicle_column`.
+- **Photo retention** is core's: the "Vehicle Photo Retention (days)" field on the Live Monitor settings page, and a daily purge at 03:05.
 
 Plates read on the exit lanes are also logged, as vehicle exits from the community.
 
 ## Plugin split: core owns the vehicle log
 
-Status: **decided 2026-10-13, not built.** "Purpose" above describes how it works today. The work is item 29 in `TODO.md` and item 5 in `fsbhoa_ac_core/TODO.md`.
+Status: **built 2026-10-13** (item 29 in `TODO.md`, item 5 in `fsbhoa_ac_core/TODO.md`).
 
 Vehicles get the same shape as pedestrians. Core owns the logs, the ingest routes and the live monitor columns. Extensions only talk to hardware and post finished events to core.
 
@@ -30,26 +31,26 @@ Vehicles get the same shape as pedestrians. Core owns the logs, the ingest route
 | Live monitor column | core | core |
 | Hardware that posts events | uhppote, kiosk, light, doorking | this plugin |
 
-**Moves to core (generic):**
-- `ac_vehicle_log`: core's `create_tables()`, `db_schema.sql` and a `migration.sql` step. The schema is version 2 of `includes/class-fsbhoa-vehicle-db.php` (with `auth_type`, `event_uid` and their indexes).
+**Moved to core (generic):**
+- `ac_vehicle_log`: core's `create_tables()`, `db_schema.sql` and a `migration.sql` step. The schema is version 2 of this plugin's former `includes/class-fsbhoa-vehicle-db.php` (with `auth_type`, `event_uid` and their indexes).
 - `POST /vehicle-event`: the API key check, the environment check and the `event_uid` duplicate check.
 - `GET /vehicle-recent`, including its cardholder lookup in `ac_credentials`, which is core's data.
 - `GET /vehicle-image/{id}`.
-- The monitor column, the photo lightbox and `assets/js/fsbhoa-vehicle-monitor.js`.
+- The monitor column, the photo lightbox and `assets/js/fsbhoa-vehicle-monitor.js` (now in core's `assets/js`).
 - Photo retention: the daily purge and the Image Retention (days) setting.
 
-**Stays here (vehicle lane hardware):**
+**Stayed here (vehicle lane hardware):**
 - All of `vehicle_service`: the Shelly loop webhook, the Speco plate drop folder, the RAM stream listener and `/ram-status`, the journal, per-lane correlation and the on-disk queue to `/vehicle-event`.
 - Settings: the lane tables, ports, RAM stream sources, correlation window, DoorKing-only events and debug logging. Also the `vehicle_service.json` writer and the system service registration.
 - The RAM stream listener can't move to `fsbhoa_ac_doorking`, because this plugin would then depend on another extension (rule 3).
 
-**The contract** between the two is the `/vehicle-event` payload. The route names stay the same, so `vehicle_service` doesn't change. Once core owns the route, document the payload in core.
+**The contract** between the two is the `/vehicle-event` payload, documented in the docblock of core's `class-fsbhoa-vehicle-log-rest-api.php`. The route names didn't change, so `vehicle_service` didn't either.
 
 **Decisions made with the split:**
 - **The folder stays `fsbhoa_ac_vehicle`**, because WordPress tracks active plugins by folder. Only the plugin's description changes, to vehicle lane hardware.
 - **When core shows the vehicle column:** only when a filter, `fsbhoa_monitor_show_vehicle_column` (default false), returns true. This plugin returns true. With no vehicle hardware plugin, the pedestrian column fills the row as it does today.
 - **The allowed-IP list is dropped.** Core's `/vehicle-event` checks only the Access Verification API Key, like `/monitor/log-event`. Core can't read this plugin's settings, and the key is the guard on every other service route. The Allowed Daemon IPs setting goes away.
-- **Image retention:** core gets its own setting and cron hook. When this plugin's settings are upgraded, it copies its `image_retention_days` into core's setting once and unschedules its own purge hook. An extension may call core.
+- **Image retention:** core has its own setting (`fsbhoa_ac_vehicle_photo_retention_days`) and cron hook (`fsbhoa_vehicle_log_purge_photos`). `fsbhoa_vehicle_hand_off_to_core()` runs once per site: it copies this plugin's old `image_retention_days` into core's setting, if core's isn't set yet, and unschedules the old `fsbhoa_vehicle_purge_images` hook. It records `fsbhoa_vehicle_core_handoff_done`. An extension may call core.
 - **Deploy both plugins together.** Both registering the same routes would conflict.
 
 **Alternatives considered:**
@@ -87,7 +88,7 @@ This is allowed as long as it can't affect production (see "Environment separati
 The workbench DoorKing setup is on the developer's home network (192.168.1.x), which reaches the testbed's LAN (192.168.42.x) over a VPN. The VPN only connects one way: the testbed (192.168.42.62) can't reach 192.168.1.x.
 
 - **RAM PC:** 192.168.1.41. Runs DoorKing's RAM software and the VPN, whose address is 192.168.70.3. RAM's Live Streaming output is pointed at the testbed.
-- **RS-232-to-LAN adapter:** connects RAM to the 1838 controller's serial port. 192.168.1.40 port 1040 (confirmed reachable from the RAM PC, 2026-10-09). The `fsbhoa_ac_doorking` proxy config still records an older 192.168.1.50:10001.
+- **RS-232-to-LAN adapter:** connects RAM to the 1838 controller's serial port. 192.168.1.40 port 1040 (confirmed reachable from the RAM PC, 2026-10-09).
 - **Wiegand inputs on the 1838:**
   - An old fob reader. The test fob is printed "603 186 06549", read as facility code 186, card number 06549. It is entered in RAM as device 06549 and is admitted on Relay 2. The panel ignores facility codes.
   - A Raspberry Pi 3B at 192.168.1.210 that simulates a Wiegand card reader. Its GPIO 17 and 27 (BCM numbering) drive the controller's L0 (green) and L1 (white) data lines through transistors. The script is `tools/wiegand_sim.py`; copy it to the Pi to run it. By default it sends facility code 0, card 10018, which is loaded in the panel and admitted on Relay 1 (device 01234 is also loaded); `--facility` and `--card` send any other 26-bit card, and `--keys 1234#` simulates a Wiegand keypad (`--key-bits 4` or `8`).
@@ -162,7 +163,7 @@ Added to what `vehicle_service` sends: `auth_type` (TODO item 7), `direction`, a
 
 ### Build order
 
-0. **Record real traffic.** *Built 2026-10-10:* the RAM listener (`vehicle_service/ram.go`), the journal (`journal.go`), loop off, and the "RAM Stream Sources" and "Device Sources" settings (Device Sources was replaced by the lane tables in step 1). The journal is `/var/lib/fsbhoa/vehicle_journal/journal-YYYY-MM-DD.jsonl`, kept 30 days; entry kinds are `ram_record`, `ram_repeat` (a collapsed flood), `ram_connect`, `ram_disconnect`, `ram_refused`, `loop`, `loop_invalid`, `plate` and `webhook_refused`. DoorKing records are journaled only; they don't feed the old single-event correlator. Not built yet: overview snapshots (needs the cameras' snapshot URL and login). Before writing the correlation, `vehicle_service` records every raw input (DoorKing records, loop on and off, plates) with its arrival time to a journal, one JSON line per input, without correlating anything. Run it against a real gate to check the scenario table, and keep the recordings: the correlation code is then tested by replaying them, and again whenever the rules change. This needs:
+0. **Record real traffic.** *Built 2026-10-10:* the RAM listener (`vehicle_service/ram.go`), the journal (`journal.go`), loop off, and the "RAM Stream Sources" and "Device Sources" settings (Device Sources was replaced by the lane tables in step 1). The journal is `/var/lib/fsbhoa/vehicle_journal/journal-YYYY-MM-DD.jsonl`, kept 30 days; entry kinds are `ram_record`, `ram_repeat` (a collapsed flood), `ram_connect`, `ram_resume` (a connection held across a restart, below), `ram_disconnect`, `ram_refused`, `loop`, `loop_invalid`, `plate` and `webhook_refused`. DoorKing records are journaled only; they don't feed the old single-event correlator. Not built yet: overview snapshots (needs the cameras' snapshot URL and login). Before writing the correlation, `vehicle_service` records every raw input (DoorKing records, loop on and off, plates) with its arrival time to a journal, one JSON line per input, without correlating anything. Run it against a real gate to check the scenario table, and keep the recordings: the correlation code is then tested by replaying them, and again whenever the rules change. This needs:
    - **The loop signal at a real gate.** A new cable from the loop detector to a Shelly. Take it from a spare output on the arm's loop detector (many detectors have a second relay) as a dry contact. Never connect to the loop wire itself: that would change what the arm's detector sees and could affect the gate.
    - **The live stream from the production RAM.** The office RAM doesn't stream today, so pointing its Live Streaming output at the testbed for the study affects no one (the user's decision, 2026-10-10). RAM probably streams to only one address, so it moves to the production server when production's own `vehicle_service` needs it.
    - **Overview camera snapshots** at both loop on and loop off, to choose which moment gives the better context photo.
@@ -177,16 +178,29 @@ Added to what `vehicle_service` sends: `auth_type` (TODO item 7), `direction`, a
 
 RAM doesn't reconnect a dropped stream by itself (see "RAM Live Streaming format"), so the RAM PC's automation script reconnects it.
 
+- **Restarts of `vehicle_service` don't need it:** systemd holds RAM's connection across them ("RAM connection hold" below). The script covers what the hold can't: reboots, a stopped service and network breaks.
 - **The script:** `DK_Sync.ahk`, the AutoHotKey script that already drives RAM for the `fsbhoa_ac_doorking` plugin. Only one script may drive RAM's window, so the reconnect is a task in that script and not a second script. The script is RAM PC tooling, not part of either plugin. This plugin relies on it only through `/ram-status` and works without it: the stream then stays down until RAM is restarted, and the settings page shows the outage.
 - **`GET /ram-status`** on `vehicle_service` (port 8088): plain text, one line per RAM account seen on an open connection, `ACCOUNT<tab>connected at` (the newest connection's opening time), CR LF line ends. Empty when nothing is connected. Only RAM stream sources and this machine get an answer; anyone else gets 403. RAM sends a "Network Connection" record as soon as it connects, so an account shows up at once.
 - **What the script does:** poll `/ram-status` every 10 seconds. When it is empty (no connection open), no RAM dialog is open and no import is running, restart RAM at once (nobody should be working in RAM at the console; `StreamIdleSeconds` in `dk_sync.ini` can make it wait for an idle PC): File → Exit, Cancel the backup folder question, start it again. RAM opens the stream when it starts, for all its accounts. At most one restart every 10 minutes. The status URL is `StreamStatusUrl` in the RAM PC's `dk_sync.ini`.
+
+## RAM connection hold
+
+Built 2026-10-13 (`vehicle_service/fdstore.go`). A restart or crash of `vehicle_service` doesn't drop RAM's connection, because systemd holds it while the service restarts. A reboot, a `systemctl stop` or a network break still drops it; the `DK_Sync.ahk` watch ("RAM reconnect" above) covers those.
+
+- **How:** systemd's file descriptor store. The service hands the RAM listener (`ram-listener`) and each open RAM connection to systemd with `sd_notify` (`FDSTORE=1`). systemd keeps its own copies, and passes them to the next start (`LISTEN_FDS`), where the service goes on reading them. Data RAM sends in the gap waits in the kernel. New connections in the gap wait in the listener's queue instead of being refused.
+- **The unit** (`vehicle_service/fsbhoa_vehicle.service`) needs `NotifyAccess=main` and `FileDescriptorStoreMax` (32). systemd keeps the store across `systemctl restart` and `Restart=` after a crash, and releases it on a stop. So `rebuild.sh install` copies the binary beside the running one and then restarts, instead of stopping first. Use `systemctl stop` only to really close RAM's connection.
+- **Names:** a held connection is stored as `ram-conn.` plus base64url JSON: a unique id, when RAM connected, and the RAM accounts it has sent. The accounts are needed because RAM sends its "Network Connection" record only once per connection: without them, `/ram-status` would be empty after a restart and `DK_Sync.ahk` would restart RAM. When a new account arrives the connection is stored again under its new name; the old name is removed first, because systemd ignores a socket it already holds, even under another name. If the accounts don't fit in systemd's 255 characters, the connection is held without them.
+- **Release:** when RAM closes a connection (or it's refused after a restart because its address is no longer a RAM source), the service removes it from the store. systemd also drops a held socket that hangs up while the service is down. A changed `ram_port` takes effect at the next restart: the held listener on the old port is released.
+- **Limits:** a record the old process had read but not yet journaled when it stopped is lost, and a record cut in half by the restart is journaled as two broken lines. Records are journaled as soon as they're read, so this needs a restart in the middle of a record.
+- **Without systemd** (run by hand), nothing is held, and the log says so.
+- **Tested** 2026-10-13 on the testbed with a loopback connection sending `Network` records (accounts `TESTHOLD`, `TESTHOLD2`): a record sent during `systemctl restart`, and one after, arrived on the same connection; the accounts were kept; the same after a SIGKILL and the automatic restart; closing the connection removed it from the store. Not yet tried with RAM itself.
 
 ## RAM Live Streaming format (captured 2026-10-09 and 10)
 
 First captured from the workbench RAM. It covers only the record types seen so far: a granted card, and RAM's own connection status. Keypad codes, directory calls and denials are still to be captured. The raw capture is in `/home/pi/ram_stream.log`.
 
 - **Transport:** RAM connects to us over TCP and keeps the connection open for its whole session. It reconnects for a new session. It sends nothing else, and expects no reply. Streaming works whether or not RAM's Live Transaction dialog is open, and with RAM minimized.
-- **RAM doesn't reconnect on its own.** If the connection drops (a `vehicle_service` restart, a reboot, a network break), RAM opens a new one only when it starts its next job (a download, an upload, Send Time). A live transaction in between doesn't make it reconnect, and is never streamed (it is still in RAM's batch history). It also didn't retry after its first connection was refused. So restarts of `vehicle_service` cut the stream until someone prompts RAM, and an open RAM connection must be watched. Accordingly, `vehicle_service` watches its config file and applies the address lists when the settings are saved, without restarting (`reload.go`; settings read only at start are logged as needing a restart), and the vehicle settings page shows each open RAM connection (address, accounts, last record) or an error when none is open.
+- **RAM doesn't reconnect on its own.** If the connection drops (a `vehicle_service` restart, a reboot, a network break), RAM opens a new one only when it starts its next job (a download, an upload, Send Time). A live transaction in between doesn't make it reconnect, and is never streamed (it is still in RAM's batch history). It also didn't retry after its first connection was refused. So a dropped connection stays down until someone prompts RAM, and an open RAM connection must be watched. Restarts of `vehicle_service` no longer drop it ("RAM connection hold"). Accordingly, `vehicle_service` watches its config file and applies the address lists when the settings are saved, without restarting (`reload.go`; settings read only at start are logged as needing a restart), and the vehicle settings page shows each open RAM connection (address, accounts, last record) or an error when none is open.
 - **Making RAM reconnect** (tested on the workbench 2026-10-11): **starting RAM** opens the stream at once ("Network Connection" right after launch), and that is what `DK_Sync.ahk` relies on ("RAM reconnect" above). Other triggers proved unreliable. **Changing** an account's Live Streaming settings (format XML, then back to RAW Text) reconnected three times in the morning, with RAM closing any open connection and opening a new one at once; clicking OK with nothing changed did nothing. From early afternoon the same change, by hand or by script, made RAM send not a single packet (checked with tcpdump), even after RAM was restarted. An Upload Trans reconnected in the morning but not in the afternoon. What decides it is unknown. RAM sends all accounts over one connection: a status record for a second account arrived on the connection WORKBENCH had opened. No record was lost across a format switch (a swipe made while in XML arrived in XML).
 - **A configuration push doesn't disturb the stream** (five pushes by `DK_Sync.ahk` on the workbench, 2026-10-11): the connection stayed open, and RAM's status records for the push ("Network Connection", then "Download Data" or "Database is Up To Date") arrived over it.
 - **Streaming is set per RAM account.** Each account (one per panel) has its own Live Streaming target. All accounts can use the same address and port; the account name in each record identifies the panel.

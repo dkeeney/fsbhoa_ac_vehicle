@@ -77,14 +77,20 @@ Items 6, 9, 10 and 11 come down to one redesign: keep one in-progress event per 
 
 ## Plugin split
 
-- [ ] **29. Hand the vehicle log, its routes and the monitor column to core.** Design: `CLAUDE.md`, "Plugin split: core owns the vehicle log". Core's side is item 5 in `fsbhoa_ac_core/TODO.md`. Do both in one change set and deploy them together.
+- [x] **29. Hand the vehicle log, its routes and the monitor column to core.** Design: `CLAUDE.md`, "Plugin split: core owns the vehicle log". Core's side is item 5 in `fsbhoa_ac_core/TODO.md`. Do both in one change set and deploy them together.
   - Remove `includes/class-fsbhoa-vehicle-db.php`, `includes/class-fsbhoa-vehicle-retention.php`, `includes/views/view-monitor-vehicle-column.php`, `assets/js/fsbhoa-vehicle-monitor.js` and `db_schema.sql`. Remove the three routes and their callbacks from `fsbhoa_ac_vehicle.php`. Leave the `fsbhoa_vehicle_db_version` option in `wp_options`; it's no longer read.
   - Return true from core's `fsbhoa_monitor_show_vehicle_column` filter.
   - Settings: remove Allowed Daemon IPs and Image Retention. On upgrade, copy `image_retention_days` into core's retention setting once, and unschedule this plugin's purge hook.
   - Change the plugin description to vehicle lane hardware. Keep the folder name.
   - Update "Purpose" in `CLAUDE.md` (the log and display bullets) and mark the split as built.
   - Test: `tools/simulate_traffic.py` events reach the monitor, a reposted `event_uid` is ignored, a wrong-environment event is refused, the photo lightbox opens, and the purge clears old photos.
+  - Done 2026-10-13. Removed the DB, retention and monitor-column classes, the monitor script, `db_schema.sql`, the three routes, and the Allowed Daemon IPs and Image Retention settings. `fsbhoa_vehicle_hand_off_to_core()` copied the testbed's retention (90 days) to core and cleared the old purge hook. Tested on the testbed with direct posts: a new event is stored, a repeated `event_uid` is answered as a duplicate, a production event gets 409, a post without the key gets 403, and the monitor routes need a login. Still to check in a browser: the monitor column and lightbox with real `vehicle_service` traffic.
 
 ## Not yet built
 
 - [x] **27. Image retention.** The `image_retention_days` setting exists, but nothing purges old images. Each event stores two image blobs in `ac_vehicle_log`. Add a daily WP-Cron job that sets `context_image_data` and `lpr_image_data` to NULL on rows older than the retention period.
+
+## RAM stream
+
+- [x] **30. A `vehicle_service` restart cuts RAM's Live Streaming.** RAM reconnects only when it starts its next job, so each restart (an install, a crash) stopped the stream until `DK_Sync.ahk` restarted RAM. Done 2026-10-13: systemd holds the RAM listener and connections across restarts (`CLAUDE.md`, "RAM connection hold"); `rebuild.sh install` now restarts instead of stopping and starting. Tested with a loopback connection on the testbed.
+  - Still to check with RAM itself: with RAM streaming, run `./rebuild.sh install` and confirm the settings page still shows RAM's connection and a swipe after the restart reaches the journal.
