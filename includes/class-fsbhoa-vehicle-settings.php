@@ -635,7 +635,8 @@ class FSBHOA_Vehicle_Settings {
 	 * Reads the RAM PC's heartbeat: ram_pc_status.txt, which DoorKing's DK_Sync.ahk rewrites
 	 * every minute in the RAM Stream File's folder. The file name is a contract with that
 	 * script (fsbhoa_ac_doorking's CLAUDE.md, "RAM automation scripts"). Returns null when
-	 * there is no file, else the file's time and its key=value lines.
+	 * there is no file, else its key=value lines, plus 'file_time' (when the file was last
+	 * written, by the NAS's clock, so the RAM PC's clock doesn't matter).
 	 *
 	 * @param string $ram_file The RAM Stream File path.
 	 */
@@ -645,13 +646,14 @@ class FSBHOA_Vehicle_Settings {
 			return null;
 		}
 		clearstatcache( true, $path );
-		$status = array( 'written' => filemtime( $path ) );
+		$status = array();
 		foreach ( (array) file( $path, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES ) as $line ) {
 			$parts = explode( '=', trim( $line ), 2 );
 			if ( 2 === count( $parts ) ) {
 				$status[ trim( $parts[0] ) ] = trim( $parts[1] );
 			}
 		}
+		$status['file_time'] = (int) filemtime( $path ); // after the file's lines, so none can replace it
 		return $status;
 	}
 
@@ -671,7 +673,7 @@ class FSBHOA_Vehicle_Settings {
 		$options   = self::get_options();
 		$file      = is_array( $health['ram_file'] ?? null ) ? $health['ram_file'] : null;
 		$pc        = self::read_ram_pc_status( (string) $options['ram_file'] );
-		$pc_stale  = $pc && ( time() - $pc['written'] > self::RAM_PC_STATUS_STALE );
+		$pc_stale  = $pc && ( time() - $pc['file_time'] > self::RAM_PC_STATUS_STALE );
 		$problem   = ! $file || ! empty( $file['error'] ) || ( $pc && ( $pc_stale || '1' !== ( $pc['ram_running'] ?? '' ) ) );
 
 		$format = function ( $iso ) {
@@ -713,7 +715,7 @@ class FSBHOA_Vehicle_Settings {
 						/* translators: 1: PC name, 2: time of the last heartbeat, 3: whether RAM runs */
 						esc_html__( 'RAM PC %1$s: last heartbeat %2$s; RAM %3$s.', 'fsbhoa-ac-vehicle' ),
 						'<code>' . esc_html( $pc['host'] ?? '?' ) . '</code>',
-						esc_html( $format( (int) $pc['written'] ) ),
+						esc_html( $format( $pc['file_time'] ) ),
 						'1' === ( $pc['ram_running'] ?? '' ) ? esc_html__( 'is running', 'fsbhoa-ac-vehicle' ) : '<strong>' . esc_html__( 'is NOT running', 'fsbhoa-ac-vehicle' ) . '</strong>'
 					);
 					if ( $pc_stale ) {
