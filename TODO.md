@@ -75,6 +75,16 @@ Items 6, 9, 10 and 11 come down to one redesign: keep one in-progress event per 
 - [x] **26. A blank modal when there's no context image.** `createCard()` opens the context image on click whenever there's a plate image, even if `has_context_img` is 0.
 - [x] **28. The monitor shows duplicate cards.** `fsbhoa_ac_vehicle_get_recent()` joins `ac_credentials` on type and value, but a value can belong to more than one credential. On the testbed, 261 active `DK_ENTRY_CODE` values (shared household PINs) and 8 `DK_WINDSHIELD` values have more than one row. Each match returns its own row, so one vehicle event shows as several cards with different cardholders. Return one row per event: pick a single credential, or list all the matching names.
 
+## Plugin split
+
+- [ ] **29. Hand the vehicle log, its routes and the monitor column to core.** Design: `CLAUDE.md`, "Plugin split: core owns the vehicle log". Core's side is item 5 in `fsbhoa_ac_core/TODO.md`. Do both in one change set and deploy them together.
+  - Remove `includes/class-fsbhoa-vehicle-db.php`, `includes/class-fsbhoa-vehicle-retention.php`, `includes/views/view-monitor-vehicle-column.php`, `assets/js/fsbhoa-vehicle-monitor.js` and `db_schema.sql`. Remove the three routes and their callbacks from `fsbhoa_ac_vehicle.php`. Leave the `fsbhoa_vehicle_db_version` option in `wp_options`; it's no longer read.
+  - Return true from core's `fsbhoa_monitor_show_vehicle_column` filter.
+  - Settings: remove Allowed Daemon IPs and Image Retention. On upgrade, copy `image_retention_days` into core's retention setting once, and unschedule this plugin's purge hook.
+  - Change the plugin description to vehicle lane hardware. Keep the folder name.
+  - Update "Purpose" in `CLAUDE.md` (the log and display bullets) and mark the split as built.
+  - Test: `tools/simulate_traffic.py` events reach the monitor, a reposted `event_uid` is ignored, a wrong-environment event is refused, the photo lightbox opens, and the purge clears old photos.
+
 ## Not yet built
 
 - [x] **27. Image retention.** The `image_retention_days` setting exists, but nothing purges old images. Each event stores two image blobs in `ac_vehicle_log`. Add a daily WP-Cron job that sets `context_image_data` and `lpr_image_data` to NULL on rows older than the retention period.

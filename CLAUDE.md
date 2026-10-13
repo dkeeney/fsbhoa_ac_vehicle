@@ -17,6 +17,45 @@ From these it builds a composite event that describes one vehicle entry. That ev
 
 Plates read on the exit lanes are also logged, as vehicle exits from the community.
 
+## Plugin split: core owns the vehicle log
+
+Status: **decided 2026-10-13, not built.** "Purpose" above describes how it works today. The work is item 29 in `TODO.md` and item 5 in `fsbhoa_ac_core/TODO.md`.
+
+Vehicles get the same shape as pedestrians. Core owns the logs, the ingest routes and the live monitor columns. Extensions only talk to hardware and post finished events to core.
+
+| | Pedestrian | Vehicle |
+|---|---|---|
+| Log table | core: `ac_access_log` | core: `ac_vehicle_log` |
+| Ingest route | core: `/monitor/log-event` | core: `/vehicle-event` |
+| Live monitor column | core | core |
+| Hardware that posts events | uhppote, kiosk, light, doorking | this plugin |
+
+**Moves to core (generic):**
+- `ac_vehicle_log`: core's `create_tables()`, `db_schema.sql` and a `migration.sql` step. The schema is version 2 of `includes/class-fsbhoa-vehicle-db.php` (with `auth_type`, `event_uid` and their indexes).
+- `POST /vehicle-event`: the API key check, the environment check and the `event_uid` duplicate check.
+- `GET /vehicle-recent`, including its cardholder lookup in `ac_credentials`, which is core's data.
+- `GET /vehicle-image/{id}`.
+- The monitor column, the photo lightbox and `assets/js/fsbhoa-vehicle-monitor.js`.
+- Photo retention: the daily purge and the Image Retention (days) setting.
+
+**Stays here (vehicle lane hardware):**
+- All of `vehicle_service`: the Shelly loop webhook, the Speco plate drop folder, the RAM stream listener and `/ram-status`, the journal, per-lane correlation and the on-disk queue to `/vehicle-event`.
+- Settings: the lane tables, ports, RAM stream sources, correlation window, DoorKing-only events and debug logging. Also the `vehicle_service.json` writer and the system service registration.
+- The RAM stream listener can't move to `fsbhoa_ac_doorking`, because this plugin would then depend on another extension (rule 3).
+
+**The contract** between the two is the `/vehicle-event` payload. The route names stay the same, so `vehicle_service` doesn't change. Once core owns the route, document the payload in core.
+
+**Decisions made with the split:**
+- **The folder stays `fsbhoa_ac_vehicle`**, because WordPress tracks active plugins by folder. Only the plugin's description changes, to vehicle lane hardware.
+- **When core shows the vehicle column:** only when a filter, `fsbhoa_monitor_show_vehicle_column` (default false), returns true. This plugin returns true. With no vehicle hardware plugin, the pedestrian column fills the row as it does today.
+- **The allowed-IP list is dropped.** Core's `/vehicle-event` checks only the Access Verification API Key, like `/monitor/log-event`. Core can't read this plugin's settings, and the key is the guard on every other service route. The Allowed Daemon IPs setting goes away.
+- **Image retention:** core gets its own setting and cron hook. When this plugin's settings are upgraded, it copies its `image_retention_days` into core's setting once and unschedules its own purge hook. An extension may call core.
+- **Deploy both plugins together.** Both registering the same routes would conflict.
+
+**Alternatives considered:**
+- **A message queue (MQTT)** between hardware adapters and processors (2026-10-12). It's a cleaner architecture, but it changes nearly every service in a system that already works. Set aside.
+- **A generic correlator in core** with a local input API for loop, plate and credential inputs. It only pays off if the lane hardware is ever replaced, because the correlation follows this hardware's timing (`docs/GATE_SCENARIOS.md`). This split can grow into it later without changing core's side.
+
 ## Deployment
 
 The plugin and `vehicle_service` run on the access control system, the same machine as WordPress and all the other plugins. There are two:
