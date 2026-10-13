@@ -23,14 +23,11 @@ type ServiceConfig struct {
 	// allowed. All of these are applied without a restart when the file changes.
 	Gates          []GateConfig     `json:"gates"`           // entrance lanes
 	ExitLanes      []ExitLaneConfig `json:"exit_lanes"`      // exit lanes
-	RAMPort        int              `json:"ram_port"`        // DoorKing RAM Live Streaming listener
-	RAMSources     []string         `json:"ram_sources"`     // addresses RAM may stream from
 	DeviceSources  []string         `json:"device_sources"`  // extra webhook addresses (older configs); the gates' devices are always allowed
 	DoorKingEvents bool             `json:"doorking_events"` // send DoorKing authentications as events on their own (stopgap)
 	JournalDir     string           `json:"journal_dir"`     // raw-input journal, one file per day
 	JournalDays    int              `json:"journal_days"`    // journal files kept this many days
-	// RAM's Live Streaming Disk File (ramfile.go). Set: it is the source of DoorKing records,
-	// and the stream only shows that RAM is connected. Empty: the stream is the source.
+	// RAM's Live Streaming Disk File (ramfile.go), the source of DoorKing records. Empty: none.
 	RAMFile string `json:"ram_file"`
 
 	// Local runtime fields (not in JSON, populated via flags/defaults)
@@ -51,7 +48,6 @@ func LoadConfig(path string) (*ServiceConfig, error) {
 		WordPressHost:      "127.0.0.1",
 		WatchDir:           "/home/pi/lpr_ftp_drop",
 		QueueDir:           "/var/lib/fsbhoa/vehicle_queue",
-		RAMPort:            8089,
 		JournalDir:         "/var/lib/fsbhoa/vehicle_journal",
 		JournalDays:        30,
 		ConfigPath:         path,
@@ -85,9 +81,6 @@ func LoadConfig(path string) (*ServiceConfig, error) {
 	}
 	cfg.WPWebhookURL = "http://127.0.0.1/wp-json/fsbhoa/v1/vehicle-event"
 
-	if cfg.RAMPort <= 0 || cfg.RAMPort > 65535 {
-		cfg.RAMPort = 8089
-	}
 	if cfg.JournalDays <= 0 {
 		cfg.JournalDays = 30
 	}

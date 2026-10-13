@@ -3,7 +3,6 @@ package main
 import (
 	"bufio"
 	"encoding/json"
-	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -150,20 +149,9 @@ func TestSources(t *testing.T) {
 
 // TestRAMListener streams the captured records, split at awkward points and with a flood,
 // and checks what reaches the journal.
-func TestRAMListener(t *testing.T) {
-	dir := t.TempDir()
-	j, err := NewJournal(dir, 30)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer ln.Close()
-	l := NewRAMListener(0, NewSources(nil), j, func(string, ...interface{}) {})
-	go l.serve(ln)
-
+// TestDoorKingRecordsFlood reads the captured records and a flood of one incomplete record
+// (seen: 28,432 copies in seven minutes) through the Disk File reader.
+func TestDoorKingRecordsFlood(t *testing.T) {
 	data, _ := os.ReadFile("testdata/ram_records.bin")
 	var flood string
 	for _, r := range loadRecords(t) {
@@ -171,34 +159,9 @@ func TestRAMListener(t *testing.T) {
 			flood = "\r\n" + r + "\r\n"
 		}
 	}
-	stream := string(data) + strings.Repeat(flood, 50)
+	dir := readThroughFile(t, string(data)+strings.Repeat(flood, 50), nil)
 
-	conn, err := net.Dial("tcp", ln.Addr().String())
-	if err != nil {
-		t.Fatal(err)
-	}
-	for len(stream) > 0 { // odd chunk sizes, so records are split across reads
-		n := 97
-		if n > len(stream) {
-			n = len(stream)
-		}
-		conn.Write([]byte(stream[:n]))
-		stream = stream[n:]
-	}
-	conn.Close()
-
-	// Wait for the disconnect entry
-	var kinds map[string]int
-	var records []map[string]interface{}
-	for deadline := time.Now().Add(3 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
-		kinds, records = readJournal(t, dir)
-		if kinds["ram_disconnect"] == 1 {
-			break
-		}
-	}
-	if kinds["ram_connect"] != 1 || kinds["ram_disconnect"] != 1 {
-		t.Fatalf("connect/disconnect entries: %v", kinds)
-	}
+	kinds, records := readJournal(t, dir)
 	// The 9 test records, then 50 flood copies: the flood record is in the middle of the test
 	// file, so the first trailing copy follows a different record and is written; the other
 	// 49 collapse into one ram_repeat entry.
@@ -212,7 +175,7 @@ func TestRAMListener(t *testing.T) {
 		if r["kind"] == "ram_repeat" && r["count"].(float64) != 49 {
 			t.Errorf("repeat count = %v, want 49", r["count"])
 		}
-		if r["kind"] == "ram_record" && r["code"] == "6020" && (r["type"] != "Entry Code" || r["remote"] != "127.0.0.1") {
+		if r["kind"] == "ram_record" && r["code"] == "6020" && (r["type"] != "Entry Code" || r["source"] != "file") {
 			t.Errorf("entry code entry: %v", r)
 		}
 	}
@@ -242,15 +205,15 @@ func readJournal(t *testing.T, dir string) (map[string]int, []map[string]interfa
 }
 
 func TestRestartNeeded(t *testing.T) {
-	old := &ServiceConfig{DaemonPort: 8088, RAMPort: 8089, APIKey: "a", RAMSources: []string{"1.2.3.4"}}
+	old := &ServiceConfig{DaemonPort: 8088, APIKey: "a", DeviceSources: []string{"1.2.3.4"}}
 	cur := *old
-	cur.RAMSources = []string{"1.2.3.4", "5.6.7.8"} // applied without a restart
+	cur.DeviceSources = []string{"1.2.3.4", "5.6.7.8"} // applied without a restart
 	if got := restartNeeded(old, &cur); len(got) != 0 {
 		t.Errorf("address list change reported as needing a restart: %v", got)
 	}
-	cur.RAMPort, cur.APIKey = 9000, "b"
-	if got := restartNeeded(old, &cur); len(got) != 2 || got[0] != "ram_port" || got[1] != "api_key" {
-		t.Errorf("restartNeeded = %v, want [ram_port api_key]", got)
+	cur.DaemonPort, cur.APIKey, cur.RAMFile = 9000, "b", "/x/Live_Testbed/stream.txt"
+	if got := restartNeeded(old, &cur); strings.Join(got, ",") != "daemon_port,api_key,ram_file" {
+		t.Errorf("restartNeeded = %v, want [daemon_port api_key ram_file]", got)
 	}
 }
 
@@ -259,7 +222,7 @@ func TestRestartNeeded(t *testing.T) {
 func TestWatchConfig(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "vehicle_service.json")
-	if err := os.WriteFile(path, []byte(`{"ram_sources":["1.2.3.4"]}`), 0640); err != nil {
+	if err := os.WriteFile(path, []byte(`{"device_sources":["1.2.3.4"]}`), 0640); err != nil {
 		t.Fatal(err)
 	}
 	got := make(chan *ServiceConfig, 1)
@@ -267,13 +230,13 @@ func TestWatchConfig(t *testing.T) {
 	time.Sleep(100 * time.Millisecond) // let the watch start
 
 	tmp := path + ".tmp"
-	os.WriteFile(tmp, []byte(`{"ram_sources":["1.2.3.4","192.168.42.182"]}`), 0640)
+	os.WriteFile(tmp, []byte(`{"device_sources":["1.2.3.4","192.168.42.182"]}`), 0640)
 	os.Rename(tmp, path)
 
 	select {
 	case c := <-got:
-		if len(c.RAMSources) != 2 || c.RAMSources[1] != "192.168.42.182" {
-			t.Errorf("reloaded RAM sources = %v", c.RAMSources)
+		if len(c.DeviceSources) != 2 || c.DeviceSources[1] != "192.168.42.182" {
+			t.Errorf("reloaded device sources = %v", c.DeviceSources)
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("config change not picked up")
@@ -319,51 +282,14 @@ func TestParseRAMXML(t *testing.T) {
 	}
 }
 
-// TestRAMListenerFormats streams a format switch as seen on 2026-10-11: XML records, a stray
-// "</Transaction>" at the start of a connection, then text records. Every record must be
-// journaled once, and the account must show in Accounts.
-func TestRAMListenerFormats(t *testing.T) {
-	dir := t.TempDir()
-	j, err := NewJournal(dir, 30)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer ln.Close()
-	l := NewRAMListener(0, NewSources(nil), j, func(string, ...interface{}) {})
-	go l.serve(ln)
-
+// TestDoorKingRecordsFormats reads a format switch as seen on 2026-10-11: XML records, a
+// stray "</Transaction>" first, then text records. Every record must be journaled once.
+func TestDoorKingRecordsFormats(t *testing.T) {
 	xml, _ := os.ReadFile("testdata/ram_records_xml.bin")
 	text, _ := os.ReadFile("testdata/ram_records.bin")
-	conn, err := net.Dial("tcp", ln.Addr().String())
-	if err != nil {
-		t.Fatal(err)
-	}
-	conn.Write([]byte("\r\n</Transaction>\r\n"))
-	conn.Write(xml)
-	conn.Write(text)
+	dir := readThroughFile(t, "\r\n</Transaction>\r\n"+string(xml)+string(text), nil)
 
-	var accounts map[string]time.Time
-	for deadline := time.Now().Add(3 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
-		if accounts = l.Accounts(); len(accounts) == 2 {
-			break
-		}
-	}
-	if _, ok := accounts["WORKBENCH"]; !ok || len(accounts) != 2 { // the text test data also has SOUTH GATES NEW
-		t.Errorf("Accounts() = %v", accounts)
-	}
-	conn.Close()
-
-	var entries []map[string]interface{}
-	for deadline := time.Now().Add(3 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
-		var kinds map[string]int
-		if kinds, entries = readJournal(t, dir); kinds["ram_disconnect"] == 1 {
-			break
-		}
-	}
+	_, entries := readJournal(t, dir)
 	formats := map[string]int{}
 	for _, e := range entries {
 		if e["kind"] == "ram_record" {

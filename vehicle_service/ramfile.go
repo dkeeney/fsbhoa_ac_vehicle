@@ -15,8 +15,9 @@ import (
 )
 
 // Reading DoorKing RAM's Live Streaming "Disk File" (CLAUDE.md, "Disk File destination";
-// TODO #31). RAM appends every live transaction to a file, opening it for each record, so
-// the file never needs reconnecting and keeps recording while this service is down. It is
+// TODO #31), the only source of DoorKing records. RAM appends every live transaction to a
+// file, opening it for each record, so the file never needs reconnecting and keeps
+// recording while this service is down. It is
 // on the NAS (CIFS), where Linux gets no change notices, so it is polled. The read position
 // is saved, so a restart or reboot continues where it stopped. Once a day the file is
 // renamed to stream_YYYY-MM-DD.txt (RAM starts a new one with its next record), and renamed
@@ -56,12 +57,12 @@ const (
 // rename; wait this long before the last read of the renamed file. A variable for the tests.
 var ramFileRotateSettle = 2 * time.Second
 
-func NewRAMFile(path, stateDir string, keepDays int, l *RAMListener) *RAMFile {
+func NewRAMFile(path, stateDir string, keepDays int, d *DoorKingRecords) *RAMFile {
 	return &RAMFile{
 		path:      path,
 		statePath: filepath.Join(stateDir, "ram_file_state.json"),
 		keepDays:  keepDays,
-		lines:     &ramLines{l: l, tag: map[string]interface{}{"source": "file"}, from: path, output: true},
+		lines:     &ramLines{d: d, tag: map[string]interface{}{"source": "file"}, from: path},
 	}
 }
 

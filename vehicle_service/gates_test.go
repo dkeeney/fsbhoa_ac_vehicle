@@ -1,10 +1,8 @@
 package main
 
 import (
-	"net"
 	"os"
 	"testing"
-	"time"
 )
 
 func TestGates(t *testing.T) {
@@ -59,37 +57,11 @@ func TestGates(t *testing.T) {
 	}
 }
 
-// TestRAMListenerGates checks that DoorKing records are tagged with their gate.
-func TestRAMListenerGates(t *testing.T) {
-	dir := t.TempDir()
-	j, err := NewJournal(dir, 30)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer ln.Close()
-	l := NewRAMListener(0, NewSources(nil), j, func(string, ...interface{}) {})
-	l.SetGates(NewGates([]GateConfig{{Name: "Workbench", RAMAccount: "WORKBENCH"}}, nil))
-	go l.serve(ln)
-
+// TestDoorKingRecordsGates checks that DoorKing records are tagged with their gate.
+func TestDoorKingRecordsGates(t *testing.T) {
 	data, _ := os.ReadFile("testdata/ram_records.bin")
-	conn, err := net.Dial("tcp", ln.Addr().String())
-	if err != nil {
-		t.Fatal(err)
-	}
-	conn.Write(data)
-	conn.Close()
-
-	var entries []map[string]interface{}
-	for deadline := time.Now().Add(3 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
-		var kinds map[string]int
-		if kinds, entries = readJournal(t, dir); kinds["ram_disconnect"] == 1 {
-			break
-		}
-	}
+	dir := readThroughFile(t, string(data), NewGates([]GateConfig{{Name: "Workbench", RAMAccount: "WORKBENCH"}}, nil))
+	_, entries := readJournal(t, dir)
 	tagged, untagged := 0, 0
 	for _, e := range entries {
 		if e["kind"] != "ram_record" || e["account"] == nil {

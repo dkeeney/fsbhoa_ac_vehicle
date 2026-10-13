@@ -20,9 +20,8 @@ if [ "$1" == "install" ]; then
     echo ""
     echo "--- Installing and Restarting Services (Sudo Required) ---"
 
-    # The service keeps running until the restart in step 5: a stop would release the RAM
-    # connections systemd holds for it (CLAUDE.md, "RAM connection hold"), and RAM would
-    # stop streaming until its next job.
+    # The service keeps running until the restart in step 5, so it is down only for the
+    # restart itself.
 
     # 1-2. COPY the new binary beside the running one, then rename it into place
     echo "Copying binaries..."
@@ -44,7 +43,7 @@ if [ "$1" == "install" ]; then
         sudo systemctl enable fsbhoa_vehicle
     fi
     
-    # 5. RESTART (a restart keeps the held RAM connections; it also starts a stopped service)
+    # 5. RESTART (this also starts a stopped service)
     echo "Restarting Systemd Services..."
     sudo systemctl restart fsbhoa_vehicle
     

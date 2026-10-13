@@ -1,24 +1,18 @@
 package main
 
 import (
-	"bufio"
-	"errors"
-	"fmt"
 	"log"
-	"net"
 	"net/netip"
 	"regexp"
-	"sort"
 	"strings"
-	"sync"
 	"sync/atomic"
-	"syscall"
 	"time"
 )
 
-// DoorKing RAM "Live Streaming" receiver. RAM connects to us over TCP, keeps the connection
-// open for its session and sends fixed-width records framed by CR LF. The format is in
-// CLAUDE.md, "RAM Live Streaming format".
+// DoorKing RAM "Live Streaming" records. RAM writes them to its Disk File (ramfile.go) as
+// fixed-width lines framed by CR LF, or in an XML format. The format is in CLAUDE.md, "RAM
+// Live Streaming format". (Until 2026-10-13 RAM also streamed them to a TCP listener here;
+// RAM never reconnected a dropped stream, so the file replaced it.)
 
 // RAMRecord is one streamed record, split into its fixed columns.
 type RAMRecord struct {
@@ -205,108 +199,33 @@ func (s Sources) Allowed(hostport string) bool {
 	return ok && (addr.IsLoopback() || s[addr])
 }
 
-// RAMListener accepts RAM Live Streaming connections and journals every record.
-type RAMListener struct {
-	port    int
-	sources atomic.Pointer[Sources] // replaced when the config file changes
-	gates   atomic.Pointer[Gates]   // RAM account -> entrance lane, for tagging records
-	events  *DoorKingEvents         // optional: authentications sent as events on their own
-	store   *FDStore                // holds the listener and connections across restarts
-	// fileSource: records come from RAM's Disk File (ramfile.go); the stream only shows
-	// that RAM is connected. Set before Run.
-	fileSource bool
-	journal    *Journal
-	debugf     func(string, ...interface{})
-
-	mu      sync.Mutex
-	streams map[int]*ramStream // open connections, for the health report
-	nextID  int
+// DoorKingRecords journals RAM's records, tagged with their entrance lane, and hands
+// authentications to the DoorKing-only events.
+type DoorKingRecords struct {
+	gates   atomic.Pointer[Gates] // RAM account -> entrance lane; replaced when the config changes
+	events  *DoorKingEvents       // optional: authentications sent as events on their own
+	journal *Journal
+	debugf  func(string, ...interface{})
 }
 
-// ramStream describes one open RAM connection.
-type ramStream struct {
-	remote      string
-	connectedAt time.Time
-	lastRecord  time.Time
-	accounts    map[string]bool
+func NewDoorKingRecords(journal *Journal, debugf func(string, ...interface{})) *DoorKingRecords {
+	d := &DoorKingRecords{journal: journal, debugf: debugf}
+	d.SetGates(NewGates(nil, nil))
+	return d
 }
 
-func NewRAMListener(port int, sources Sources, journal *Journal, debugf func(string, ...interface{})) *RAMListener {
-	l := &RAMListener{port: port, journal: journal, debugf: debugf, streams: map[int]*ramStream{}, store: &FDStore{}}
-	l.SetSources(sources)
-	l.SetGates(NewGates(nil, nil))
-	return l
-}
+func (d *DoorKingRecords) SetGates(g *Gates) { d.gates.Store(g) }
 
-func (l *RAMListener) SetSources(s Sources) { l.sources.Store(&s) }
+// SetEvents sets where authentications go as events of their own. Call before reading.
+func (d *DoorKingRecords) SetEvents(e *DoorKingEvents) { d.events = e }
 
-func (l *RAMListener) SetGates(g *Gates) { l.gates.Store(g) }
-
-// SetEvents sets where authentications go as events of their own. Call before Run.
-func (l *RAMListener) SetEvents(e *DoorKingEvents) { l.events = e }
-
-// SetFileSource makes RAM's Disk File the source of records: the stream's records are then
-// only parsed, to show which accounts are connected. Call before Run.
-func (l *RAMListener) SetFileSource(on bool) { l.fileSource = on }
-
-// SetStore sets the systemd file descriptor store that holds the listener and the open
-// connections across restarts. Call before Run; without it nothing is held.
-func (l *RAMListener) SetStore(s *FDStore) { l.store = s }
-
-// Allowed reports whether a remote address is a configured RAM stream source.
-func (l *RAMListener) Allowed(hostport string) bool { return l.sources.Load().Allowed(hostport) }
-
-// Accounts returns each RAM account seen on an open connection, with when the newest of
-// those connections opened. RAM sends a "Network Connection" record for the account as
-// soon as it connects, so an account appears here at once.
-func (l *RAMListener) Accounts() map[string]time.Time {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	out := map[string]time.Time{}
-	for _, st := range l.streams {
-		for a := range st.accounts {
-			if st.connectedAt.After(out[a]) {
-				out[a] = st.connectedAt
-			}
-		}
-	}
-	return out
-}
-
-// Streams describes the open RAM connections, for the health report.
-func (l *RAMListener) Streams() []map[string]interface{} {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	out := []map[string]interface{}{}
-	for _, st := range l.streams {
-		accounts := []string{}
-		for a := range st.accounts {
-			accounts = append(accounts, a)
-		}
-		sort.Strings(accounts)
-		entry := map[string]interface{}{
-			"remote":       st.remote,
-			"connected_at": st.connectedAt.Local().Format(journalTimeFormat),
-			"accounts":     accounts,
-		}
-		if !st.lastRecord.IsZero() {
-			entry["last_record_at"] = st.lastRecord.Local().Format(journalTimeFormat)
-		}
-		out = append(out, entry)
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i]["connected_at"].(string) < out[j]["connected_at"].(string) })
-	return out
-}
-
-// ramLines turns the lines of RAM's Live Streaming output, from the stream or the Disk File,
-// into records. It assembles XML-format records, and when output is on, collapses floods of
-// identical records, journals each record tagged with its lane, and hands authentications to
-// the DoorKing-only events.
+// ramLines turns lines of RAM's Live Streaming output into records. It assembles XML-format
+// records, collapses floods of identical records, journals each record tagged with its lane,
+// and hands authentications to the DoorKing-only events.
 type ramLines struct {
-	l      *RAMListener
-	tag    map[string]interface{} // added to each journal entry: the stream's "remote", or "source"
+	d      *DoorKingRecords
+	tag    map[string]interface{} // added to each journal entry, such as "source": "file"
 	from   string                 // where the lines come from, for the log
-	output bool                   // false: parse only
 	filter repeatFilter
 	xml    []string // lines of an XML record in progress
 }
@@ -319,7 +238,7 @@ func (p *ramLines) Line(line string, at time.Time) (RAMRecord, bool) {
 	if trimmed == "" {
 		return RAMRecord{}, false
 	}
-	// RAM sends each record in the text format on one line, or in XML over several lines,
+	// RAM writes each record in the text format on one line, or in XML over several lines,
 	// from <Transaction> to </Transaction>. Both are accepted, so switching the format in
 	// RAM, or someone setting it to XML, can't lose a record.
 	var rec RAMRecord
@@ -340,9 +259,7 @@ func (p *ramLines) Line(line string, at time.Time) (RAMRecord, bool) {
 	} else {
 		rec = ParseRAMRecord(line)
 	}
-	if p.output {
-		p.write(rec, line, at)
-	}
+	p.write(rec, line, at)
 	return rec, true
 }
 
@@ -356,13 +273,13 @@ func (p *ramLines) write(rec RAMRecord, line string, at time.Time) {
 	for k, v := range p.tag {
 		fields[k] = v
 	}
-	gate := p.l.gates.Load().ForAccount(rec.Account)
+	gate := p.d.gates.Load().ForAccount(rec.Account)
 	if gate != "" {
 		fields["gate"] = gate
 	}
-	p.l.journal.WriteAt(at, "ram_record", fields)
-	if p.l.events != nil {
-		p.l.events.Handle(rec, gate, at)
+	p.d.journal.WriteAt(at, "ram_record", fields)
+	if p.d.events != nil {
+		p.d.events.Handle(rec, gate, at)
 	}
 	if rec.Kind == "credential" {
 		if gate == "" {
@@ -370,15 +287,13 @@ func (p *ramLines) write(rec RAMRecord, line string, at time.Time) {
 		}
 		log.Printf("[RAM] %s (%s) %s %s %s %s", rec.Account, gate, rec.Type, rec.Code, rec.Result, rec.Relay)
 	} else {
-		p.l.debugf("[RAM] %s record: %q", rec.Kind, strings.TrimSpace(line))
+		p.d.debugf("[RAM] %s record: %q", rec.Kind, strings.TrimSpace(line))
 	}
 }
 
-// Flush journals the copies collapsed so far. Call it when the lines end.
+// Flush journals the copies collapsed so far. Call it when a batch of lines ends.
 func (p *ramLines) Flush() {
-	if p.output {
-		p.summary(p.filter.Flush())
-	}
+	p.summary(p.filter.Flush())
 }
 
 func (p *ramLines) summary(s *repeatSummary) {
@@ -389,202 +304,6 @@ func (p *ramLines) summary(s *repeatSummary) {
 	for k, v := range p.tag {
 		fields[k] = v
 	}
-	p.l.journal.WriteAt(s.last, "ram_repeat", fields)
+	p.d.journal.WriteAt(s.last, "ram_repeat", fields)
 	log.Printf("[RAM] %d identical copies of one record collapsed from %s", s.count, p.from)
-}
-
-// heldListenerName is the listener's name in the file descriptor store.
-const heldListenerName = "ram-listener"
-
-func (l *RAMListener) Run() {
-	ln, err := l.listen()
-	if err != nil {
-		log.Printf("[ERROR] DoorKing listener could not start on port %d: %v", l.port, err)
-		return
-	}
-	if len(*l.sources.Load()) == 0 {
-		log.Printf("[CONFIG] WARNING: no RAM stream sources configured; only this machine may connect to port %d", l.port)
-	}
-	l.resumeHeld()
-	l.store.ReleaseUntaken()
-	l.serve(ln)
-}
-
-// listen takes back the listener systemd held across the restart, or opens a new one and
-// hands it to systemd. While this service restarts, systemd's copy keeps the port open, so
-// RAM's new connections wait to be accepted instead of being refused.
-func (l *RAMListener) listen() (net.Listener, error) {
-	for _, files := range l.store.Take(heldListenerName) {
-		for _, f := range files {
-			ln, err := net.FileListener(f)
-			f.Close()
-			if err != nil {
-				log.Printf("[FDSTORE] Held RAM listener unusable: %v", err)
-				continue
-			}
-			if a, ok := ln.Addr().(*net.TCPAddr); ok && a.Port == l.port {
-				log.Printf("DoorKing RAM listener on port %d (held across the restart)", l.port)
-				return ln, nil
-			}
-			ln.Close() // ram_port changed
-		}
-		l.store.Remove(heldListenerName)
-	}
-
-	ln, err := net.Listen("tcp", fmt.Sprintf(":%d", l.port))
-	if err != nil {
-		return nil, err
-	}
-	if tl, ok := ln.(*net.TCPListener); ok {
-		if err := l.store.Store(heldListenerName, tl); err != nil {
-			log.Printf("[FDSTORE] Could not hold the RAM listener: %v", err)
-		}
-	}
-	log.Printf("DoorKing RAM listener on port %d", l.port)
-	return ln, nil
-}
-
-// resumeHeld goes on reading the RAM connections that systemd held across the restart.
-func (l *RAMListener) resumeHeld() {
-	for name, files := range l.store.Take(heldStreamPrefix) {
-		held, ok := parseHeldStream(name)
-		for _, f := range files {
-			conn, err := net.FileConn(f)
-			f.Close()
-			if err != nil || !ok {
-				if conn != nil {
-					conn.Close()
-				}
-				log.Printf("[FDSTORE] Dropped held RAM connection %q (name unreadable or socket unusable: %v)", name, err)
-				l.store.Remove(name)
-				continue
-			}
-			h := held
-			h.name = name
-			go l.handle(conn, &h)
-		}
-	}
-}
-
-func (l *RAMListener) serve(ln net.Listener) {
-	for {
-		conn, err := ln.Accept()
-		if errors.Is(err, net.ErrClosed) {
-			return
-		}
-		if err != nil {
-			log.Printf("[ERROR] DoorKing listener accept: %v", err)
-			time.Sleep(time.Second)
-			continue
-		}
-		go l.handle(conn, nil)
-	}
-}
-
-// handle reads one RAM connection until it closes. held is set for a connection that
-// systemd held across a restart, and carries when it opened and its accounts.
-func (l *RAMListener) handle(conn net.Conn, held *heldStream) {
-	defer conn.Close()
-	remote := conn.RemoteAddr().String()
-	ip, _ := remoteAddr(remote)
-	if !l.sources.Load().Allowed(remote) {
-		log.Printf("[WARN] Refused DoorKing connection from %s: not a configured RAM stream source", remote)
-		l.journal.Write("ram_refused", map[string]interface{}{"remote": ip.String()})
-		if held != nil {
-			l.store.Remove(held.name)
-		}
-		return
-	}
-
-	resumed := held != nil
-
-	stream := &ramStream{remote: ip.String(), connectedAt: time.Now(), accounts: map[string]bool{}}
-	if held != nil {
-		stream.connectedAt = time.UnixMilli(held.Since)
-		for _, a := range held.Accounts {
-			stream.accounts[a] = true
-		}
-	} else {
-		held = &heldStream{ID: time.Now().UnixNano(), Since: stream.connectedAt.UnixMilli()}
-		if sc, ok := conn.(syscall.Conn); ok {
-			if err := l.store.Store(held.Name(), sc); err != nil {
-				log.Printf("[FDSTORE] Could not hold the RAM connection from %s: %v", remote, err)
-			}
-		}
-	}
-	heldName := held.name
-	if heldName == "" {
-		heldName = held.Name()
-	}
-	l.mu.Lock()
-	id := l.nextID
-	l.nextID++
-	l.streams[id] = stream
-	l.mu.Unlock()
-	defer func() {
-		l.mu.Lock()
-		delete(l.streams, id)
-		l.mu.Unlock()
-		l.store.Remove(heldName) // RAM closed it: systemd must not hold it any longer
-	}()
-	if resumed {
-		log.Printf("[RAM] Resumed after a restart: %s (connected since %s, accounts %v)", remote, stream.connectedAt.Local().Format(journalTimeFormat), held.Accounts)
-		l.journal.Write("ram_resume", map[string]interface{}{"remote": ip.String(), "connected_at": stream.connectedAt.Local().Format(journalTimeFormat), "accounts": held.Accounts})
-	} else {
-		log.Printf("[RAM] Connected: %s", remote)
-		l.journal.Write("ram_connect", map[string]interface{}{"remote": ip.String()})
-	}
-
-	// A new account goes into the held connection's name, so a restart keeps it (heldStream)
-	rename := func() {
-		l.mu.Lock()
-		held.Accounts = held.Accounts[:0]
-		for a := range stream.accounts {
-			held.Accounts = append(held.Accounts, a)
-		}
-		l.mu.Unlock()
-		sort.Strings(held.Accounts)
-		sc, ok := conn.(syscall.Conn)
-		next := held.Name()
-		if !ok || next == heldName {
-			return
-		}
-		// Remove first: systemd ignores a socket it already holds, even under another name
-		l.store.Remove(heldName)
-		heldName = next
-		if err := l.store.Store(next, sc); err != nil {
-			log.Printf("[FDSTORE] Could not update the held RAM connection from %s: %v", remote, err)
-		}
-	}
-
-	// When the Disk File is the source of records (ramfile.go), the stream only shows that
-	// RAM is connected, and its records aren't journaled or sent, or each would count twice.
-	lines := &ramLines{l: l, tag: map[string]interface{}{"remote": ip.String()}, from: remote, output: !l.fileSource}
-	scanner := bufio.NewScanner(conn) // splits on LF and drops the CR
-	scanner.Buffer(make([]byte, 4096), 64*1024)
-	for scanner.Scan() {
-		at := time.Now()
-		rec, ok := lines.Line(scanner.Text(), at)
-		if !ok {
-			continue
-		}
-		l.mu.Lock()
-		stream.lastRecord = at
-		newAccount := rec.Account != "" && !stream.accounts[rec.Account]
-		if newAccount {
-			stream.accounts[rec.Account] = true
-		}
-		l.mu.Unlock()
-		if newAccount {
-			rename()
-		}
-	}
-	lines.Flush()
-
-	reason := "closed by RAM"
-	if err := scanner.Err(); err != nil {
-		reason = err.Error()
-	}
-	log.Printf("[RAM] Disconnected: %s (%s)", remote, reason)
-	l.journal.Write("ram_disconnect", map[string]interface{}{"remote": ip.String(), "reason": reason})
 }

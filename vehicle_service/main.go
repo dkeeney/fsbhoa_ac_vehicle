@@ -10,7 +10,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -291,28 +290,21 @@ func main() {
 
 	gsm := NewGateStateManager(cfg, dispatcher, journal)
 
-	// DoorKing RAM Live Streaming. Journaled only for now (traffic study); it doesn't feed
-	// the correlator until per-lane correlation is built.
-	ram := NewRAMListener(cfg.RAMPort, NewSources(cfg.RAMSources), journal, gsm.debugf)
-	ram.SetGates(NewGates(cfg.Gates, cfg.ExitLanes))
+	// DoorKing records, from RAM's Live Streaming Disk File. Journaled (traffic study) and, when
+	// "doorking_events" is on, sent as events on their own; they don't feed the correlator
+	// until per-lane correlation is built.
+	dkRecords := NewDoorKingRecords(journal, gsm.debugf)
 	dkEvents := NewDoorKingEvents(dispatcher, cfg.DoorKingEvents)
-	ram.SetEvents(dkEvents)
-	// systemd holds RAM's listener and connections while this service restarts
-	ram.SetStore(NewFDStore())
-
-	// RAM's Disk File, when set and allowed for this server's environment, is the source of
-	// DoorKing records instead of the stream
+	dkRecords.SetEvents(dkEvents)
 	var ramFile *RAMFile
-	if cfg.RAMFile != "" {
-		if err := ramFileAllowed(cfg.RAMFile, cfg.Environment); err != nil {
-			log.Printf("[CONFIG] WARNING: not reading RAM's Disk File %s: %v. The stream stays the source of DoorKing records.", cfg.RAMFile, err)
-		} else {
-			ramFile = NewRAMFile(cfg.RAMFile, cfg.JournalDir, cfg.JournalDays, ram)
-			ram.SetFileSource(true)
-			go ramFile.Run()
-		}
+	if cfg.RAMFile == "" {
+		log.Printf("[CONFIG] WARNING: no RAM Stream File is set; no DoorKing records will be read")
+	} else if err := ramFileAllowed(cfg.RAMFile, cfg.Environment); err != nil {
+		log.Printf("[CONFIG] WARNING: not reading RAM's Disk File %s: %v. No DoorKing records will be read.", cfg.RAMFile, err)
+	} else {
+		ramFile = NewRAMFile(cfg.RAMFile, cfg.JournalDir, cfg.JournalDays, dkRecords)
+		go ramFile.Run()
 	}
-	go ram.Run()
 
 	// Ensure drop directory exists before starting watcher
 	if err := os.MkdirAll(cfg.WatchDir, 0755); err != nil {
@@ -331,20 +323,19 @@ func main() {
 		s := g.DeviceSources(c.DeviceSources)
 		gates.Store(g)
 		devices.Store(&s)
-		ram.SetGates(g)
+		dkRecords.SetGates(g)
 		if g.Count() == 0 {
 			log.Printf("[CONFIG] WARNING: no lanes configured; DoorKing records and loop changes aren't matched to a lane, and only this machine may call the webhooks")
 		}
 	}
 	setGates(cfg)
 
-	// Saving the vehicle settings rewrites the config file. Apply the address lists without
-	// a restart (systemd holds the RAM connections across one, but there's no need for it).
+	// Saving the vehicle settings rewrites the config file. Apply the lanes and the
+	// DoorKing-only events setting without a restart.
 	go WatchConfig(*configPath, func(next *ServiceConfig) {
-		ram.SetSources(NewSources(next.RAMSources))
 		setGates(next)
 		dkEvents.SetEnabled(next.DoorKingEvents)
-		log.Printf("[CONFIG] Reloaded: %d entrance lanes, %d exit lanes, RAM stream sources %v", len(next.Gates), len(next.ExitLanes), next.RAMSources)
+		log.Printf("[CONFIG] Reloaded: %d entrance lanes, %d exit lanes", len(next.Gates), len(next.ExitLanes))
 		if changed := restartNeeded(cfg, next); len(changed) > 0 {
 			log.Printf("[CONFIG] Changed settings that need a restart of vehicle_service to apply: %v", changed)
 		}
@@ -372,45 +363,21 @@ func main() {
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
-		streams := ram.Streams()
 		w.Header().Set("Content-Type", "application/json")
 		var fileStatus interface{}
 		if ramFile != nil {
 			fileStatus = ramFile.Status()
 		}
 		json.NewEncoder(w).Encode(map[string]interface{}{
-			"ram_file":        fileStatus, // the Disk File reader, when it is the source
-			"service":         "vehicle_service",
-			"status":          "healthy",
-			"uptime":          int64(time.Since(startTime).Seconds()),
-			"ram_connections": len(streams),
-			"ram_streams":     streams,            // each open RAM connection and the accounts it has sent
-			"ram_source":      ramSource(ramFile), // where DoorKing records come from: "stream" or "file"
-			"last_seen":       journal.LastSeen(), // newest journal entry of each kind
+			"service":   "vehicle_service",
+			"status":    "healthy",
+			"uptime":    int64(time.Since(startTime).Seconds()),
+			"ram_file":  fileStatus,         // the Disk File reader; null when it isn't reading
+			"last_seen": journal.LastSeen(), // newest journal entry of each kind
 		})
 	}
 	mux.HandleFunc("/health", healthHandler)
 	mux.HandleFunc("/status", healthHandler)
-
-	// For the RAM PC's automation script (DK_Sync.ahk), which makes RAM reconnect an account
-	// whose stream is missing. Plain text, one line per account on an open connection:
-	// "ACCOUNT<tab>connected at". Answers RAM stream sources and this machine only.
-	mux.HandleFunc("/ram-status", func(w http.ResponseWriter, r *http.Request) {
-		if !ram.Allowed(r.RemoteAddr) {
-			http.Error(w, "forbidden", http.StatusForbidden)
-			return
-		}
-		accounts := ram.Accounts()
-		names := make([]string, 0, len(accounts))
-		for a := range accounts {
-			names = append(names, a)
-		}
-		sort.Strings(names)
-		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		for _, a := range names {
-			fmt.Fprintf(w, "%s\t%s\r\n", a, accounts[a].Format(journalTimeFormat))
-		}
-	})
 
 	// Shelly Pro 1 Loop Detector Webhook: ?state=on|off (also 1|0, true|false)
 	mux.HandleFunc("/webhook/loop", fromDevice(func(w http.ResponseWriter, r *http.Request) {
@@ -449,12 +416,4 @@ func main() {
 	listenAddr := fmt.Sprintf(":%d", cfg.DaemonPort)
 	log.Printf("FSBHOA Vehicle Service listening on %s (Watch: %s, Queue: %s, Journal: %s, Environment: %s)", listenAddr, cfg.WatchDir, cfg.QueueDir, cfg.JournalDir, cfg.Environment)
 	log.Fatal(http.ListenAndServe(listenAddr, mux))
-}
-
-// ramSource names where DoorKing records come from, for the health report.
-func ramSource(f *RAMFile) string {
-	if f != nil {
-		return "file"
-	}
-	return "stream"
 }

@@ -10,8 +10,7 @@ import (
 
 // WatchConfig re-reads the config file whenever WordPress rewrites it (it writes a temp
 // file and renames it into place), and calls apply with the new config. Settings that can
-// change without a restart are applied this way. (A restart once dropped the RAM
-// connections; systemd now holds them across one, see fdstore.go.)
+// change without a restart are applied this way.
 func WatchConfig(path string, apply func(*ServiceConfig)) {
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
@@ -65,7 +64,6 @@ func restartNeeded(old, cur *ServiceConfig) []string {
 		}
 	}
 	check("daemon_port", old.DaemonPort != cur.DaemonPort)
-	check("ram_port", old.RAMPort != cur.RAMPort)
 	check("api_key", old.APIKey != cur.APIKey)
 	check("correlation_window", old.CorrelationWindow != cur.CorrelationWindow)
 	check("enable_debug_logging", old.EnableDebugLogging != cur.EnableDebugLogging)

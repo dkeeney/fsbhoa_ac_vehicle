@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -47,7 +46,7 @@ func TestRAMFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	l := NewRAMListener(0, NewSources(nil), j, func(string, ...interface{}) {})
+	l := NewDoorKingRecords(j, func(string, ...interface{}) {})
 	liveDir := filepath.Join(t.TempDir(), "Live_Testbed")
 	os.MkdirAll(liveDir, 0755)
 	path := filepath.Join(liveDir, "stream.txt")
@@ -124,7 +123,7 @@ func TestRAMFileFirstStart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	l := NewRAMListener(0, NewSources(nil), j, func(string, ...interface{}) {})
+	l := NewDoorKingRecords(j, func(string, ...interface{}) {})
 	path := filepath.Join(t.TempDir(), "stream.txt")
 	appendTo(t, path, fileRecord("00001"))
 	f := NewRAMFile(path, t.TempDir(), 30, l)
@@ -165,36 +164,22 @@ func TestRAMFileAllowed(t *testing.T) {
 	}
 }
 
-// With the Disk File as the source, the stream's records are only parsed: RAM's accounts
-// still show in /ram-status, but nothing is journaled or sent twice.
-func TestRAMListenerFileSource(t *testing.T) {
-	dir := t.TempDir()
-	j, err := NewJournal(dir, 30)
+// readThroughFile writes data to a Disk File and reads it the way vehicle_service does. It
+// returns the journal's folder.
+func readThroughFile(t *testing.T, data string, gates *Gates) string {
+	t.Helper()
+	journalDir := t.TempDir()
+	j, err := NewJournal(journalDir, 30)
 	if err != nil {
 		t.Fatal(err)
 	}
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
+	d := NewDoorKingRecords(j, func(string, ...interface{}) {})
+	if gates != nil {
+		d.SetGates(gates)
 	}
-	defer ln.Close()
-	l := NewRAMListener(0, NewSources(nil), j, func(string, ...interface{}) {})
-	l.SetFileSource(true)
-	go l.serve(ln)
-
-	conn, err := net.Dial("tcp", ln.Addr().String())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer conn.Close()
-	conn.Write([]byte(fileRecord("00001") + fileRecord("00002")))
-	for deadline := time.Now().Add(3 * time.Second); time.Now().Before(deadline) && len(l.Accounts()) == 0; time.Sleep(20 * time.Millisecond) {
-	}
-	if _, ok := l.Accounts()["WORKBENCH"]; !ok {
-		t.Fatalf("accounts = %v, want WORKBENCH", l.Accounts())
-	}
-	kinds, _ := readJournal(t, dir)
-	if kinds["ram_record"] != 0 || kinds["ram_connect"] != 1 {
-		t.Errorf("journal kinds = %v, want a ram_connect and no ram_record", kinds)
-	}
+	path := filepath.Join(t.TempDir(), "stream.txt")
+	f := NewRAMFile(path, t.TempDir(), 30, d)
+	appendTo(t, path, data)
+	f.poll(time.Now())
+	return journalDir
 }
