@@ -47,7 +47,7 @@ Items 6, 9, 10 and 11 come down to one redesign: keep one in-progress event per 
 - [ ] **12. Plate confidence.** `lpr_confidence` is never filled in.
   - 2026-10-16: the O4BLP2M reports no confidence (not in its uploads or its plate settings). Unless the NVR has one, the column stays empty.
 - [ ] **13. Filename pattern.** `plateRegex` matches `VEHICE_…_plate_([A-Z0-9]+)\.jpg`. "VEHICE" is Speco's own spelling (confirmed from real captures in the testbed drop folder). The pattern drops plates containing a space, a dash or lowercase letters.
-  - 2026-10-17: the new reader (`lpr.go`) takes any plate text (`_plate_(.*)\.jpg`) and keeps it as it is. Still to see: what the camera writes for plates with spaces or dashes, and for a vehicle without a plate.
+  - 2026-10-17: the new reader (`lpr.go`) takes any plate text (`_plate_(.*)\.jpg`) and keeps it as it is. A vehicle without a readable plate comes as `_plate_Unknown000.jpg`; the reader journals it with an empty `plate` and `no_plate`. Still to see: what the camera writes for plates with spaces or dashes.
 
 ## Service setup and deployment
 
@@ -115,3 +115,4 @@ Items 6, 9, 10 and 11 come down to one redesign: keep one in-progress event per 
   - Before alerting, record both side by side for a week or two (the journal: `ram_record` and `plate`) to measure the time from credential to plate, how often plates are missed, and whether directory calls appear in RAM. The fireman's key and the emergency strobe sensor open the gate without RAM seeing it, so those will raise false alerts.
   - Run it silently first (flags on the cards); turn the sound on once false alerts are rare. The monitor column, the sound and an acknowledge button are core's.
   - All four LPR cameras upload to the testbed since 2026-10-17.
+  - Reads without a plate (`no_plate`) include vehicles that never came through the gate: the north entrance camera's first was a pickup passing on the cross street. Before such reads can raise alerts, they need filtering: from the study (how often, which cameras), then perhaps a smaller detection region or the direction setting ("further") in the camera, which is the user's decision.

@@ -33,6 +33,9 @@ var (
 	// device name: S Gate Entry LPR mac: 5c-f2-07-5f-fd-97  ipaddr:192.168.107.138, License plate number:...
 	lprSummaryLine = regexp.MustCompile(`device name:\s*(.*?)\s+mac:\s*(\S+)\s+ipaddr:\s*([0-9.]+)`)
 	lprCaptureTime = regexp.MustCompile(`^(\d{4}-\d{2}-\d{2})-(\d{2})-(\d{2})-(\d{2})-(\d+)$`)
+	// A vehicle without a readable plate ("Capture Plate Absence Vehicle"): the plate is
+	// Unknown000 in the file name (Unknown in the summary), and the crop is the whole vehicle
+	lprNoPlate = regexp.MustCompile(`^Unknown\d*$`)
 )
 
 // lprPairWait is how long a plate crop waits for its scene photo, and a scene photo for its
@@ -265,10 +268,10 @@ func (d *LPRDrop) finish(key string) {
 // journalRead writes the read to the journal. Call with d.mu held.
 func (d *LPRDrop) journalRead(key string, r *lprRead) {
 	delete(d.pending, key)
+	plate := r.plate
 	entry := map[string]interface{}{
 		"camera":       r.camera,
 		"capture_time": lprCaptureTimeText(r.captureTime),
-		"plate":        r.plate,
 		"plate_file":   r.plateFile,
 		"scene_file":   r.sceneFile,
 	}
@@ -278,6 +281,11 @@ func (d *LPRDrop) journalRead(key string, r *lprRead) {
 	if !r.sceneAt.IsZero() {
 		entry["scene_arrived"] = r.sceneAt.Format(time.RFC3339Nano)
 	}
+	if lprNoPlate.MatchString(plate) {
+		entry["no_plate"], entry["camera_plate"] = true, plate
+		plate = ""
+	}
+	entry["plate"] = plate
 	switch {
 	case r.plateFile == "":
 		entry["missing"] = "plate" // a vehicle without a readable plate, or a lost upload

@@ -89,17 +89,25 @@ func TestLPRDrop(t *testing.T) {
 		t.Errorf("other upload: %v", others[0])
 	}
 
+	// A vehicle without a readable plate
+	upload(t, filepath.Join(hour, "VEHICE_2026-10-16-17-25-00-003_plate_Unknown000.jpg"), "vehicle", true)
+	upload(t, filepath.Join(hour, "VEHICE_2026-10-16-17-25-00-003_src.jpg"), "scene", true)
+	reads = waitForJournal(t, jdir, "plate", 3)
+	if reads[2]["plate"] != "" || reads[2]["no_plate"] != true || reads[2]["camera_plate"] != "Unknown000" || reads[2]["missing"] != nil {
+		t.Errorf("vehicle without a plate: %v", reads[2])
+	}
+
 	// A plate crop whose scene photo never comes
 	upload(t, filepath.Join(hour, "VEHICE_2026-10-16-17-30-00-002_plate_ABC123.jpg"), "plate", true)
-	reads = waitForJournal(t, jdir, "plate", 3)
-	if reads[2]["plate"] != "ABC123" || reads[2]["missing"] != "scene" {
-		t.Errorf("read without a scene photo: %v", reads[2])
+	reads = waitForJournal(t, jdir, "plate", 4)
+	if reads[3]["plate"] != "ABC123" || reads[3]["missing"] != "scene" {
+		t.Errorf("read without a scene photo: %v", reads[3])
 	}
 
 	// Each upload counts once, though a new folder's scan and the files' own notices both see it
 	time.Sleep(2 * d.pairWait)
-	if kinds, _ := readJournal(t, jdir); kinds["plate"] != 3 || kinds["lpr_file"] != 1 {
-		t.Errorf("journal has %d reads and %d other uploads, want 3 and 1", kinds["plate"], kinds["lpr_file"])
+	if kinds, _ := readJournal(t, jdir); kinds["plate"] != 4 || kinds["lpr_file"] != 1 {
+		t.Errorf("journal has %d reads and %d other uploads, want 4 and 1", kinds["plate"], kinds["lpr_file"])
 	}
 }
 
