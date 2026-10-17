@@ -198,6 +198,16 @@ Built 2026-10-17. The cameras upload each read by FTP to the server; `vehicle_se
 - The cameras have an `automation` user for this (Normal user); give it only Remote preview and Remote view logs, and a strong password.
 - Other events the firmware offers (line crossing, pass-line counting) don't appear in the O4BLP2M's menus.
 
+### Overview cameras: motion
+
+Built 2026-10-17. The overview and keypad cameras are Speco O2VLB5 (firmware 3.4.3, ONVIF through gSOAP). Their web pages need ActiveX, but ONVIF works with the "Speco Cameras" login. Their snapshot, `http://<ip>/snapshot.JPG` (1920 x 1080, about 470 KB, 0.4 to 1 s), **needs no login at all** (all five checked: .131, .134, .21, .10, .12). Their clocks keep UTC correctly, but daylight saving time is off, so the time they show is an hour behind. Their ONVIF motion events (`VideoSource/MotionAlarm`) report motion all the time, so they can't be used.
+
+- **Motion Regions** (settings, config key `motion_regions`): areas of a lane's overview or keypad camera, one a line, `<camera IP> <name> <left> <top> <right> <bottom>` in percent of the picture. South Enter has `192.168.107.131 gate 54 20 82 50` (where cars pass the gate), `192.168.107.131 arm 62 0 70 20` (the arm when it's up) and `192.168.107.134 keypad 47 12 90 75` (the lane at the keypad; it leaves out the trees, sidewalk and street). Applied without a restart.
+- **Detection** (`vehicle_service/motion.go`): one snapshot a second per camera with a region. Each is reduced to 1/8 size in brightness, and each region is compared with the previous frame: a region moves when at least 3% of its pixels changed by more than 24 (of 255) beyond the region's median change, so a cloud or an exposure change doesn't count. It is still after 3 frames without change. About 50 ms per snapshot on the testbed.
+- **A pass** runs from the first region that moves to 2 frames after the last one is still. It keeps the 3 frames before it, at most 120 frames, half size (960 x 540, about 140 KB), in `/var/lib/fsbhoa/overview_frames/<date>/<camera IP>/<HHMMSS.mmm>.jpg` (`overview_frame_dir`), kept 3 days (`overview_frame_days`). No frames are saved while the disk has less than 2 GB free (the testbed was 91% full on 2026-10-17). Each pass is journaled as `motion`: the camera and its lane, the pass's start and end, each region's start, end and peak share, and the frame files. A snapshot failure is journaled once as `camera_failed`, and the recovery as `camera_ok`.
+- **What it's for:** frames of every car at the keypad and the gate, including cars that turn around without a plate read (2026-10-17 09:42: a sedan and the car behind it at the keypad, never read entering). Next: show the frames nearest a plate read on the monitor card (a third photo, needing a column in core), and use the arm region to tell whether the arm was up.
+- **The keypad camera can read front plates:** in the 09:42 frames from .134 the GMC pickup's front plate is legible.
+
 ### Event payload changes
 
 Added to what `vehicle_service` sends: `auth_type` (TODO item 7), `direction`, and in `raw_details`: the lane, loop-on and loop-off times, every presentation (first and last read, read count, relay, the record's own time and name), and the plate's arrival time.
