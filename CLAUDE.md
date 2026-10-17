@@ -119,7 +119,7 @@ Status: **proposed, for review** (2026-10-10). The WordPress side (`fsbhoa_ac_ve
 
 The settings page has two tables (built in step 1):
 - **Entrance Lanes** (config key `gates`), **one row per entrance lane**. Each entrance lane has its own DoorKing controller, loop sensor, LPR camera and overview camera, so each row has:
-  - **Name**, used as `gate_identifier` in the log and on the monitor: `North`, `South`, `Workbench`.
+  - **Name**, used as `gate_identifier` in the log and on the monitor. The testbed's say which way they go, since the monitor card shows only the name (and an EXIT tag when the name doesn't say exit): `North Enter`, `South Enter`, `Workbench`; exit lanes `North Exit`, `South Exit`.
   - **RAM account**, as it appears in the stream (`WORKBENCH`; matched case-insensitively). This is how a DoorKing record is matched to its lane.
   - The IP addresses of its **loop sensor** (Shelly), **LPR camera** and **overview camera** (which sees the vehicle as it passes the gate).
 - **Exit Lanes** (config key `exit_lanes`), one row per exit lane: **name**, **LPR camera** and an optional **overview camera**. Exit lanes have no DoorKing and no loop sensor. They aren't tied to an entrance: a car may enter at any entrance and leave at any exit. An exit lane's name may repeat an entrance's (`South`).
