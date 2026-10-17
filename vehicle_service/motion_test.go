@@ -145,10 +145,13 @@ func TestBrightRegion(t *testing.T) {
 		img := image.NewYCbCr(image.Rect(0, 0, 100, 100), image.YCbCrSubsampleRatio420)
 		for i := range img.Y {
 			img.Y[i] = 60 // the hedge
+			if i%7 == 0 {
+				img.Y[i] = 220 // sunlit specks, which mustn't count
+			}
 		}
 		if armUp {
 			for y := 0; y < 100; y++ {
-				for x := 48; x < 53; x++ {
+				for x := 48; x < 56; x++ {
 					img.Y[img.YOffset(x, y)] = 230 // the white arm, a quarter of the region
 				}
 			}

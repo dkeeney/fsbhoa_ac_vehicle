@@ -58,8 +58,9 @@ const (
 	motionScale        = 8    // snapshots are compared at 1/8 size each way (240 x 135)
 	motionPixelDiff    = 24   // a compared pixel changed if its brightness moved this much (of 255) beyond the region's average change
 	motionShare        = 0.03 // a region moved if this share of its pixels changed
-	brightLevel        = 170  // a pixel is bright at this brightness (of 255)
-	brightOnShare      = 0.15 // a "bright" region is on when this share of its pixels are bright (the arm: about 0.2 up, under 0.1 down)
+	brightScale        = 4    // "bright" regions are measured on 4 x 4 averages: at full size, sunlit specks in the hedge count as bright
+	brightLevel        = 170  // an averaged pixel is bright at this brightness (of 255)
+	brightOnShare      = 0.08 // a "bright" region is on when this share of its averaged pixels are bright (the arm: 0.15 to 0.17 up, 0.01 down)
 	brightSettleFrames = 2    // a "bright" region changes state after this many frames agree
 	motionQuietFrames  = 3    // a region's motion ends after this many still frames
 	motionPreroll      = 3    // frames kept from before the first motion
@@ -398,23 +399,28 @@ func (d *motionDetector) brightStates(t time.Time, img image.Image) []brightChan
 	return changes
 }
 
-// brightShare is the share of a region's pixels at least brightLevel, at full size.
+// brightShare is the share of a region's brightScale x brightScale averages that are at
+// least brightLevel.
 func brightShare(img image.Image, r MotionRegion) float64 {
 	b := img.Bounds()
 	x0, x1 := b.Min.X+int(r.Left/100*float64(b.Dx())), b.Min.X+int(r.Right/100*float64(b.Dx()))
 	y0, y1 := b.Min.Y+int(r.Top/100*float64(b.Dy())), b.Min.Y+int(r.Bottom/100*float64(b.Dy()))
 	ycc, isYCC := img.(*image.YCbCr)
 	n, bright := 0, 0
-	for y := y0; y < y1; y++ {
-		for x := x0; x < x1; x++ {
-			var v uint8
-			if isYCC {
-				v = ycc.Y[ycc.YOffset(x, y)]
-			} else {
-				v = color.GrayModel.Convert(img.At(x, y)).(color.Gray).Y
+	for y := y0; y+brightScale <= y1; y += brightScale {
+		for x := x0; x+brightScale <= x1; x += brightScale {
+			sum := 0
+			for dy := 0; dy < brightScale; dy++ {
+				for dx := 0; dx < brightScale; dx++ {
+					if isYCC {
+						sum += int(ycc.Y[ycc.YOffset(x+dx, y+dy)])
+					} else {
+						sum += int(color.GrayModel.Convert(img.At(x+dx, y+dy)).(color.Gray).Y)
+					}
+				}
 			}
 			n++
-			if v >= brightLevel {
+			if sum/(brightScale*brightScale) >= brightLevel {
 				bright++
 			}
 		}
