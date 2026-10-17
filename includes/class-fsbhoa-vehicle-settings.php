@@ -388,8 +388,12 @@ class FSBHOA_Vehicle_Settings {
 			}
 			$parts = preg_split( '/\s+/', $line );
 			$error = '';
+			$kind  = '';
+			if ( 7 === count( $parts ) && 'bright' === $parts[6] ) {
+				$kind = array_pop( $parts );
+			}
 			if ( 6 !== count( $parts ) ) {
-				$error = __( 'it needs a camera address, a name and four edges', 'fsbhoa-ac-vehicle' );
+				$error = __( 'it needs a camera address, a name and four edges, and may end with "bright"', 'fsbhoa-ac-vehicle' );
 			} elseif ( ! in_array( $parts[0], $cameras, true ) ) {
 				$error = __( 'the camera is not a lane\'s overview or keypad camera', 'fsbhoa-ac-vehicle' );
 			} elseif ( ! preg_match( '/^[A-Za-z0-9_-]{1,20}$/', $parts[1] ) ) {
@@ -398,6 +402,7 @@ class FSBHOA_Vehicle_Settings {
 				$error = __( 'the camera already has a region of that name', 'fsbhoa-ac-vehicle' );
 			} else {
 				$edges = array_map( 'floatval', array_slice( $parts, 2 ) );
+				$error = '';
 				foreach ( array_slice( $parts, 2 ) as $edge ) {
 					if ( ! is_numeric( $edge ) || $edge < 0 || $edge > 100 ) {
 						$error = __( 'the edges must be numbers from 0 to 100', 'fsbhoa-ac-vehicle' );
@@ -429,6 +434,9 @@ class FSBHOA_Vehicle_Settings {
 				'right'  => $edges[2],
 				'bottom' => $edges[3],
 			);
+			if ( '' !== $kind ) {
+				$regions[ count( $regions ) - 1 ]['kind'] = $kind;
+			}
 		}
 		return $regions;
 	}
@@ -439,7 +447,7 @@ class FSBHOA_Vehicle_Settings {
 	private static function motion_regions_text( $regions ) {
 		$lines = array();
 		foreach ( (array) $regions as $r ) {
-			$lines[] = implode( ' ', array( $r['camera'], $r['name'], $r['left'], $r['top'], $r['right'], $r['bottom'] ) );
+			$lines[] = trim( implode( ' ', array( $r['camera'], $r['name'], $r['left'], $r['top'], $r['right'], $r['bottom'], $r['kind'] ?? '' ) ) );
 		}
 		return implode( "\n", $lines );
 	}
@@ -709,7 +717,7 @@ class FSBHOA_Vehicle_Settings {
 				 class="large-text code"
 				 placeholder="192.168.107.131 gate 54 20 82 50"><?php echo esc_textarea( self::motion_regions_text( $options['motion_regions'] ) ); ?></textarea>
 		<p class="description">
-			<?php esc_html_e( 'Areas of the overview and keypad cameras\' pictures that vehicle_service watches for motion, one a line: the camera\'s address (a lane\'s overview or keypad camera), a name (gate, arm, keypad), then the left, top, right and bottom edges in percent of the picture\'s width and height. It compares the camera\'s snapshot once a second; each pass of motion is recorded in the journal, and its frames are kept, half size, for 3 days in /var/lib/fsbhoa/overview_frames. Applied without a restart.', 'fsbhoa-ac-vehicle' ); ?>
+			<?php esc_html_e( 'Areas of the overview and keypad cameras\' pictures that vehicle_service watches for motion, one a line: the camera\'s address (a lane\'s overview or keypad camera), a name (gate, arm, keypad), then the left, top, right and bottom edges in percent of the picture\'s width and height. A region ending with "bright" isn\'t watched for motion: it is on while enough of it is bright (the white arm against the hedge when it is up), and each change is recorded in the journal. It compares the camera\'s snapshot once a second; each pass of motion is recorded in the journal, and its frames are kept, half size, for 3 days in /var/lib/fsbhoa/overview_frames. Applied without a restart.', 'fsbhoa-ac-vehicle' ); ?>
 		</p>
 		<?php
 	}

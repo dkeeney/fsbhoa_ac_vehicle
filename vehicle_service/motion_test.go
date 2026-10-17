@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"image"
 	"image/jpeg"
 	"os"
@@ -135,5 +136,38 @@ func TestMotionPass(t *testing.T) {
 	}
 	if frames[0] != filepath.Join("2026-10-17", "192.0.2.31", "140002.000.jpg") {
 		t.Errorf("first frame %v, want the one 3 seconds before the motion", frames[0])
+	}
+}
+
+func TestBrightRegion(t *testing.T) {
+	d := newMotionDetector([]MotionRegion{{Name: "arm-up", Kind: "bright", Left: 40, Top: 0, Right: 60, Bottom: 100}})
+	frame := func(armUp bool) image.Image {
+		img := image.NewYCbCr(image.Rect(0, 0, 100, 100), image.YCbCrSubsampleRatio420)
+		for i := range img.Y {
+			img.Y[i] = 60 // the hedge
+		}
+		if armUp {
+			for y := 0; y < 100; y++ {
+				for x := 48; x < 53; x++ {
+					img.Y[img.YOffset(x, y)] = 230 // the white arm, a quarter of the region
+				}
+			}
+		}
+		return img
+	}
+	t0 := time.Date(2026, 10, 17, 14, 0, 0, 0, time.Local)
+	var got []string
+	for i, up := range []bool{false, false, false, true, false, true, true, true, false, false} {
+		for _, c := range d.brightStates(t0.Add(time.Duration(i)*time.Second), frame(up)) {
+			got = append(got, fmt.Sprintf("%d:%v", i, c.on))
+		}
+	}
+	// settles down at frame 1; one up frame alone doesn't count; up at 6; down at 9
+	want := []string{"1:false", "6:true", "9:false"}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("changes %v, want %v", got, want)
+	}
+	if d.moving() {
+		t.Error("a bright region counted as motion")
 	}
 }

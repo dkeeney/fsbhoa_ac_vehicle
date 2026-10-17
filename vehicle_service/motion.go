@@ -46,6 +46,9 @@ type MotionRegion struct {
 	Top    float64 `json:"top"`
 	Right  float64 `json:"right"`
 	Bottom float64 `json:"bottom"`
+	// "" watches for motion. "bright" is on while a share of its pixels are bright, such as
+	// the white arm against the hedge when it's up; each change is journaled.
+	Kind string `json:"kind,omitempty"`
 }
 
 const (
@@ -55,6 +58,9 @@ const (
 	motionScale        = 8    // snapshots are compared at 1/8 size each way (240 x 135)
 	motionPixelDiff    = 24   // a compared pixel changed if its brightness moved this much (of 255) beyond the region's average change
 	motionShare        = 0.03 // a region moved if this share of its pixels changed
+	brightLevel        = 170  // a pixel is bright at this brightness (of 255)
+	brightOnShare      = 0.15 // a "bright" region is on when this share of its pixels are bright (the arm: about 0.2 up, under 0.1 down)
+	brightSettleFrames = 2    // a "bright" region changes state after this many frames agree
 	motionQuietFrames  = 3    // a region's motion ends after this many still frames
 	motionPreroll      = 3    // frames kept from before the first motion
 	motionPostroll     = 2    // frames kept after the last region goes still
@@ -206,6 +212,16 @@ func (w *cameraWatch) handleFrame(t time.Time, data []byte) {
 		return
 	}
 	started, ended := w.det.step(t, reduceGray(img, motionScale))
+	for _, c := range w.det.brightStates(t, img) {
+		entry := map[string]interface{}{"camera_ip": w.ip, "region": c.name, "on": c.on, "at": t.Local().Format(journalTimeFormat), "share": math.Round(c.share*1000) / 1000}
+		if g := w.m.gates.Load(); g != nil {
+			if d, ok := g.ForIP(w.ip); ok {
+				entry["gate"], entry["direction"], entry["device"] = d.Gate, d.Direction, d.Device
+			}
+		}
+		w.m.journal.Write("region_state", entry)
+		w.m.debugf("[MOTION] %s: %s %v", w.ip, c.name, c.on)
+	}
 	frame := motionFrame{t: t, jpeg: data}
 
 	if w.pass == nil && len(started) > 0 {
@@ -349,6 +365,64 @@ type regionState struct {
 	last   time.Time // the last frame that moved
 	quiet  int
 	peak   float64
+	on     bool // "bright" regions: the settled state
+	known  bool // "bright" regions: a state has settled since the start
+	agree  int  // "bright" regions: frames in a row that differ from the settled state
+}
+
+type brightChange struct {
+	name  string
+	on    bool
+	share float64
+}
+
+// brightStates checks each "bright" region at full size, and returns the ones whose state
+// settled on a new value (the first state after the start counts too).
+func (d *motionDetector) brightStates(t time.Time, img image.Image) []brightChange {
+	var changes []brightChange
+	for _, r := range d.regions {
+		if r.Kind != "bright" {
+			continue
+		}
+		share := brightShare(img, r.MotionRegion)
+		on := share >= brightOnShare
+		if r.known && on == r.on {
+			r.agree = 0
+			continue
+		}
+		if r.agree++; r.agree >= brightSettleFrames {
+			r.on, r.known, r.agree = on, true, 0
+			changes = append(changes, brightChange{name: r.Name, on: on, share: share})
+		}
+	}
+	return changes
+}
+
+// brightShare is the share of a region's pixels at least brightLevel, at full size.
+func brightShare(img image.Image, r MotionRegion) float64 {
+	b := img.Bounds()
+	x0, x1 := b.Min.X+int(r.Left/100*float64(b.Dx())), b.Min.X+int(r.Right/100*float64(b.Dx()))
+	y0, y1 := b.Min.Y+int(r.Top/100*float64(b.Dy())), b.Min.Y+int(r.Bottom/100*float64(b.Dy()))
+	ycc, isYCC := img.(*image.YCbCr)
+	n, bright := 0, 0
+	for y := y0; y < y1; y++ {
+		for x := x0; x < x1; x++ {
+			var v uint8
+			if isYCC {
+				v = ycc.Y[ycc.YOffset(x, y)]
+			} else {
+				v = color.GrayModel.Convert(img.At(x, y)).(color.Gray).Y
+			}
+			n++
+			if v >= brightLevel {
+				bright++
+			}
+		}
+	}
+	if n == 0 {
+		return 0
+	}
+	return float64(bright) / float64(n)
 }
 
 func newMotionDetector(regions []MotionRegion) *motionDetector {
@@ -368,6 +442,9 @@ func (d *motionDetector) step(t time.Time, g *grayFrame) (started []string, ende
 		return nil, nil
 	}
 	for _, r := range d.regions {
+		if r.Kind != "" {
+			continue
+		}
 		share := regionShare(prev, g, r.MotionRegion)
 		if share >= motionShare {
 			if !r.moving {
