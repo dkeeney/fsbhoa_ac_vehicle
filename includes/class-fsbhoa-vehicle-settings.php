@@ -353,6 +353,7 @@ class FSBHOA_Vehicle_Settings {
 					'loop_ip'     => __( 'Loop sensor', 'fsbhoa-ac-vehicle' ),
 					'lpr_ip'      => __( 'LPR camera', 'fsbhoa-ac-vehicle' ),
 					'overview_ip' => __( 'Overview camera', 'fsbhoa-ac-vehicle' ),
+					'keypad_ip'   => __( 'Keypad camera', 'fsbhoa-ac-vehicle' ),
 				),
 			),
 			'exit_lanes' => array(
@@ -487,7 +488,7 @@ class FSBHOA_Vehicle_Settings {
 		<p class="description">
 			<?php
 			if ( $spec['account'] ) {
-				esc_html_e( 'One row per entrance lane; each has its own DoorKing controller, loop sensor and cameras. The name is the gate shown in the vehicle log and on the monitor. The RAM account is the account name exactly as RAM sends it (as in RAM\'s account list); it is how a DoorKing record is matched to its lane. The addresses are the devices\' IP addresses: only they may call vehicle_service\'s webhooks, and the address tells which lane a call is from.', 'fsbhoa-ac-vehicle' );
+				esc_html_e( 'One row per entrance lane; each has its own DoorKing controller, loop sensor and cameras. The name is the gate shown in the vehicle log and on the monitor. The RAM account is the account name exactly as RAM sends it (as in RAM\'s account list); it is how a DoorKing record is matched to its lane. The addresses are the devices\' IP addresses: only they may call vehicle_service\'s webhooks, and the address tells which lane a call is from. The overview camera sees vehicles pass the gate (and the arm); the keypad camera sees them at the keypad and tag reader. Both are optional.', 'fsbhoa-ac-vehicle' );
 			} else {
 				esc_html_e( 'One row per exit lane. Exit lanes have no DoorKing controller or loop sensor; every plate read on one is logged as a vehicle leaving, under the lane\'s name. A car may enter at any entrance and leave at any exit, so exits aren\'t tied to an entrance. The name may repeat an entrance\'s name (e.g. South). The overview camera is optional.', 'fsbhoa-ac-vehicle' );
 			}

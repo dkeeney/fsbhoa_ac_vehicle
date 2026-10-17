@@ -7,7 +7,7 @@ import (
 
 func TestGates(t *testing.T) {
 	g := NewGates([]GateConfig{
-		{Name: "North", RAMAccount: "NORTH GATES", LoopIP: "192.168.42.71", LPRIP: "192.168.42.81", OverviewIP: "192.168.42.91"},
+		{Name: "North", RAMAccount: "NORTH GATES", LoopIP: "192.168.42.71", LPRIP: "192.168.42.81", OverviewIP: "192.168.42.91", KeypadIP: "192.168.42.93"},
 		{Name: "South", RAMAccount: "South Gates ", LoopIP: "192.168.42.72", LPRIP: "192.168.42.81"}, // camera address repeated
 		{Name: "Workbench", RAMAccount: "north gates", LoopIP: "not-an-ip"},                          // account repeated
 		{Name: "", RAMAccount: "IGNORED", LoopIP: "192.168.42.99"},                                   // no name
@@ -30,6 +30,7 @@ func TestGates(t *testing.T) {
 		"192.168.42.71:50000":          {Gate: "North", Direction: "entry", Device: "loop"},
 		"192.168.42.81:21":             {Gate: "North", Direction: "entry", Device: "lpr"}, // the first use keeps a repeated address
 		"192.168.42.91:80":             {Gate: "North", Direction: "entry", Device: "overview"},
+		"192.168.42.93:80":             {Gate: "North", Direction: "entry", Device: "keypad"},
 		"192.168.42.82:80":             {Gate: "North", Direction: "exit", Device: "lpr"},
 		"[::ffff:192.168.42.72]:50000": {Gate: "South", Direction: "entry", Device: "loop"},
 	} {

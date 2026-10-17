@@ -14,7 +14,8 @@ type GateConfig struct {
 	RAMAccount string `json:"ram_account"` // the account name in RAM's stream records
 	LoopIP     string `json:"loop_ip"`     // loop sensor (Shelly)
 	LPRIP      string `json:"lpr_ip"`      // LPR camera
-	OverviewIP string `json:"overview_ip"` // overview (context) camera
+	OverviewIP string `json:"overview_ip"` // overview (context) camera: sees the vehicle pass the gate, and the arm
+	KeypadIP   string `json:"keypad_ip"`   // keypad camera: sees the vehicle at the keypad and tag reader
 }
 
 // ExitLaneConfig is one exit lane from the Exit Lanes table. Exit lanes have only cameras,
@@ -29,7 +30,7 @@ type ExitLaneConfig struct {
 type GateDevice struct {
 	Gate      string // the lane's name
 	Direction string // "entry" or "exit"
-	Device    string // "loop", "lpr" or "overview"
+	Device    string // "loop", "lpr", "overview" or "keypad"
 }
 
 // Gates indexes the lane tables for lookups by RAM account and by device address.
@@ -54,7 +55,7 @@ func NewGates(entrances []GateConfig, exits []ExitLaneConfig) *Gates {
 				g.byAccount[acct] = name
 			}
 		}
-		g.addDevices(name, "entry", map[string]string{"loop": gate.LoopIP, "lpr": gate.LPRIP, "overview": gate.OverviewIP})
+		g.addDevices(name, "entry", map[string]string{"loop": gate.LoopIP, "lpr": gate.LPRIP, "overview": gate.OverviewIP, "keypad": gate.KeypadIP})
 	}
 	for _, lane := range exits {
 		if name := strings.TrimSpace(lane.Name); name != "" {
@@ -65,7 +66,7 @@ func NewGates(entrances []GateConfig, exits []ExitLaneConfig) *Gates {
 }
 
 func (g *Gates) addDevices(lane, direction string, devices map[string]string) {
-	for _, device := range []string{"loop", "lpr", "overview"} { // fixed order: the first use of an address wins
+	for _, device := range []string{"loop", "lpr", "overview", "keypad"} { // fixed order: the first use of an address wins
 		ip := strings.TrimSpace(devices[device])
 		if ip == "" {
 			continue
