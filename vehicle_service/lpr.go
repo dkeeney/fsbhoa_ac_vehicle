@@ -36,19 +36,27 @@ var (
 	// A vehicle without a readable plate ("Capture Plate Absence Vehicle"): the plate is
 	// Unknown000 in the file name (Unknown in the summary), and the crop is the whole vehicle
 	lprNoPlate = regexp.MustCompile(`^Unknown\d*$`)
+	// lprCaptureTimeText's result, as /vehicle-event takes it
+	lprEventTime = regexp.MustCompile(`^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{1,6}$`)
 )
 
 // lprPairWait is how long a plate crop waits for its scene photo, and a scene photo for its
 // plate crop, before the read is journaled with the other one missing.
 const lprPairWait = 10 * time.Second
 
+// lprCameraWait is how long a complete read from a camera not known yet waits for the
+// camera's hourly summary, which names it. The summary is uploaded after the photos.
+const lprCameraWait = 3 * time.Second
+
 // LPRDrop watches the upload folder and journals each read.
 type LPRDrop struct {
-	dir      string
-	journal  *Journal
-	debugf   func(format string, args ...interface{})
-	pairWait time.Duration
-	gates    atomic.Pointer[Gates]
+	dir        string
+	journal    *Journal
+	debugf     func(format string, args ...interface{})
+	pairWait   time.Duration
+	cameraWait time.Duration
+	gates      atomic.Pointer[Gates]
+	events     *PlateEvents // sends reads to the vehicle log when that setting is on; may be nil
 
 	mu      sync.Mutex
 	cameras map[string]lprCamera // by MAC folder name, learned from the hourly summaries
@@ -71,23 +79,30 @@ type lprRead struct {
 	plateAt     time.Time
 	sceneAt     time.Time
 	timer       *time.Timer
+	waited      bool // already waited for the camera's summary
 }
 
 func NewLPRDrop(dir string, journal *Journal, debugf func(string, ...interface{})) *LPRDrop {
 	return &LPRDrop{
-		dir:      dir,
-		journal:  journal,
-		debugf:   debugf,
-		pairWait: lprPairWait,
-		cameras:  map[string]lprCamera{},
-		pending:  map[string]*lprRead{},
-		handled:  map[string]time.Time{},
+		dir:        dir,
+		journal:    journal,
+		debugf:     debugf,
+		pairWait:   lprPairWait,
+		cameraWait: lprCameraWait,
+		cameras:    map[string]lprCamera{},
+		pending:    map[string]*lprRead{},
+		handled:    map[string]time.Time{},
 	}
 }
 
 // SetGates replaces the lane tables used to tag reads with their lane.
 func (d *LPRDrop) SetGates(g *Gates) {
 	d.gates.Store(g)
+}
+
+// SetEvents sets where reads are sent as vehicle events. Call before Run.
+func (d *LPRDrop) SetEvents(p *PlateEvents) {
+	d.events = p
 }
 
 // Run watches the folder and every folder the cameras create in it. Files already there
@@ -103,6 +118,13 @@ func (d *LPRDrop) Run() {
 	if err := os.MkdirAll(d.dir, 0775); err != nil {
 		log.Printf("[WARN] LPR upload folder %s: %v", d.dir, err)
 	}
+	// The summaries already there name the cameras, so reads can be tagged from the start
+	_ = filepath.WalkDir(d.dir, func(path string, entry os.DirEntry, err error) error {
+		if err == nil && !entry.IsDir() && lprSummaryFile.MatchString(entry.Name()) {
+			d.readSummary(path)
+		}
+		return nil
+	})
 	d.watchTree(watcher, d.dir, false)
 	log.Printf("[LPR] Watching %s for camera uploads", d.dir)
 
@@ -252,6 +274,11 @@ func (d *LPRDrop) addFile(camera, captureTime, path, plate string, isPlate bool)
 	d.debugf("[LPR] %s %s from %s (capture %s)", map[bool]string{true: "Plate " + plate, false: "Scene photo"}[isPlate], filepath.Base(path), camera, captureTime)
 	if r.plateFile != "" && r.sceneFile != "" {
 		r.timer.Stop()
+		if _, known := d.cameras[camera]; !known && !r.waited {
+			r.waited = true
+			r.timer = time.AfterFunc(d.cameraWait, func() { d.finish(key) }) // readSummary may finish it sooner
+			return
+		}
 		d.journalRead(key, r)
 	}
 }
@@ -295,6 +322,21 @@ func (d *LPRDrop) journalRead(key string, r *lprRead) {
 	d.tagCamera(entry, r.camera)
 	d.journal.Write("plate", entry)
 	log.Printf("[LPR] Read at %v: plate %q from %s (capture %s)", entry["gate"], r.plate, r.camera, entry["capture_time"])
+
+	if d.events != nil {
+		read := PlateRead{
+			Camera: r.camera, Plate: plate, CaptureTime: r.captureTime,
+			PlateFile: r.plateFile, SceneFile: r.sceneFile, PlateArrived: r.plateAt, SceneArrived: r.sceneAt,
+		}
+		read.CameraName, _ = entry["camera_name"].(string)
+		read.CameraIP, _ = entry["camera_ip"].(string)
+		read.Gate, _ = entry["gate"].(string)
+		read.Direction, _ = entry["direction"].(string)
+		read.NoPlate, _ = entry["no_plate"].(bool)
+		read.CameraPlate, _ = entry["camera_plate"].(string)
+		read.Missing, _ = entry["missing"].(string)
+		go d.events.Send(read) // reading and shrinking the photos takes a moment; don't hold d.mu
+	}
 }
 
 // tagCamera adds the camera's name and address, and its lane when the address is in the lane
@@ -332,6 +374,13 @@ func (d *LPRDrop) readSummary(path string) {
 		if d.cameras[m[2]] != cam {
 			d.cameras[m[2]] = cam
 			log.Printf("[LPR] Camera %s is %q at %s", m[2], cam.Name, cam.IP)
+		}
+	}
+	// Complete reads that were waiting to learn their camera
+	for key, r := range d.pending {
+		if _, known := d.cameras[r.camera]; known && r.waited {
+			r.timer.Stop()
+			d.journalRead(key, r)
 		}
 	}
 }

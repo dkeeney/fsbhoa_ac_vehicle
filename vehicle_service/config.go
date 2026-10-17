@@ -25,6 +25,7 @@ type ServiceConfig struct {
 	ExitLanes      []ExitLaneConfig `json:"exit_lanes"`      // exit lanes
 	DeviceSources  []string         `json:"device_sources"`  // extra webhook addresses (older configs); the gates' devices are always allowed
 	DoorKingEvents bool             `json:"doorking_events"` // send DoorKing authentications as events on their own (stopgap)
+	PlateEvents    bool             `json:"plate_events"`    // send LPR camera reads as events on their own (stopgap)
 	JournalDir     string           `json:"journal_dir"`     // raw-input journal, one file per day
 	JournalDays    int              `json:"journal_days"`    // journal files kept this many days
 	// RAM's Live Streaming Disk File (ramfile.go), the source of DoorKing records. Empty: none.

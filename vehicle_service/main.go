@@ -211,9 +211,12 @@ func main() {
 		go ramFile.Run()
 	}
 
-	// Plate reads, from the LPR cameras' FTP uploads. Journaled (traffic study) only; they
-	// don't feed the correlator until per-lane correlation is built.
+	// Plate reads, from the LPR cameras' FTP uploads. Journaled (traffic study) and, when
+	// "plate_events" is on, sent as events on their own; they don't feed the correlator
+	// until per-lane correlation is built.
 	lprDrop := NewLPRDrop(cfg.LPRDropDir, journal, gsm.debugf)
+	plateEvents := NewPlateEvents(dispatcher, cfg.PlateEvents)
+	lprDrop.SetEvents(plateEvents)
 	go lprDrop.Run()
 
 	// The gates' devices are the only addresses (besides this machine) that may call the
@@ -234,10 +237,11 @@ func main() {
 	setGates(cfg)
 
 	// Saving the vehicle settings rewrites the config file. Apply the lanes and the
-	// DoorKing-only events setting without a restart.
+	// DoorKing-only and plate read events settings without a restart.
 	go WatchConfig(*configPath, func(next *ServiceConfig) {
 		setGates(next)
 		dkEvents.SetEnabled(next.DoorKingEvents)
+		plateEvents.SetEnabled(next.PlateEvents)
 		log.Printf("[CONFIG] Reloaded: %d entrance lanes, %d exit lanes", len(next.Gates), len(next.ExitLanes))
 		if changed := restartNeeded(cfg, next); len(changed) > 0 {
 			log.Printf("[CONFIG] Changed settings that need a restart of vehicle_service to apply: %v", changed)

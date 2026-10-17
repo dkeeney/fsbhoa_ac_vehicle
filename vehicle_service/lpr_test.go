@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -108,6 +109,47 @@ func TestLPRDrop(t *testing.T) {
 	time.Sleep(2 * d.pairWait)
 	if kinds, _ := readJournal(t, jdir); kinds["plate"] != 4 || kinds["lpr_file"] != 1 {
 		t.Errorf("journal has %d reads and %d other uploads, want 4 and 1", kinds["plate"], kinds["lpr_file"])
+	}
+}
+
+// The camera uploads its hourly summary after the photos; a read from a camera not known yet
+// waits for it, and cameras already named in the folder's summaries are known from the start.
+func TestLPRDropSummaryAfterPhotos(t *testing.T) {
+	drop, jdir := t.TempDir(), t.TempDir()
+	journal, err := NewJournal(jdir, 30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gates := NewGates([]GateConfig{{Name: "North", LPRIP: "192.168.107.140"}}, []ExitLaneConfig{{Name: "South", LPRIP: "192.168.107.137"}})
+	summary := func(name, mac, ip string) string {
+		return "\ufeffdevice name: " + name + " mac: " + mac + "  ipaddr:" + ip + ", License plate number:X VEHICE time: 2026-10-17 08:45:43 \r\n"
+	}
+	// The south exit camera's summary is there before the reader starts
+	exitHour := filepath.Join(drop, "5c-f2-07-5f-fd-be", "VEHICE", "2026-10-17", "8")
+	upload(t, filepath.Join(exitHour, "VEHICE_2026-10-17-08.txt"), summary("S Gate Exit LPR", "5c-f2-07-5f-fd-be", "192.168.107.137"), false)
+
+	d := NewLPRDrop(drop, journal, t.Logf)
+	d.SetGates(gates)
+	go d.Run()
+	time.Sleep(200 * time.Millisecond)
+
+	// North entrance: photos, then the summary
+	hour := filepath.Join(drop, "5c-f2-07-5f-fd-9d", "VEHICE", "2026-10-17", "8")
+	upload(t, filepath.Join(hour, "VEHICE_2026-10-17-08-45-42-091_plate_39357Y2.jpg"), "plate", true)
+	upload(t, filepath.Join(hour, "VEHICE_2026-10-17-08-45-42-091_src.jpg"), "scene", true)
+	time.Sleep(300 * time.Millisecond)
+	upload(t, filepath.Join(hour, "VEHICE_2026-10-17-08.txt"), summary("N Gate Entry LPR", "5c-f2-07-5f-fd-9d", "192.168.107.140"), false)
+	// South exit: known from the start
+	upload(t, filepath.Join(exitHour, "VEHICE_2026-10-17-08-50-00-001_plate_8RGW713.jpg"), "plate", true)
+	upload(t, filepath.Join(exitHour, "VEHICE_2026-10-17-08-50-00-001_src.jpg"), "scene", true)
+
+	reads := waitForJournal(t, jdir, "plate", 2)
+	got := map[string]string{}
+	for _, r := range reads {
+		got[r["plate"].(string)] = fmt.Sprint(r["gate"], " ", r["direction"])
+	}
+	if got["39357Y2"] != "North entry" || got["8RGW713"] != "South exit" {
+		t.Errorf("lanes: %v", got)
 	}
 }
 

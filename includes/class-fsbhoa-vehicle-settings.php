@@ -68,6 +68,7 @@ class FSBHOA_Vehicle_Settings {
 			'correlation_window'   => 15,
 			'enable_debug_logging' => 0,
 			'doorking_events'      => 0,
+			'plate_events'         => 0,
 			'ram_file'             => '',
 			'lpr_drop_dir'         => self::LPR_DROP_DIR_DEFAULT,
 			'gates'                => array(),
@@ -200,6 +201,15 @@ class FSBHOA_Vehicle_Settings {
 		);
 
 		add_settings_field(
+			'plate_events',
+			__( 'Plate Read Events', 'fsbhoa-ac-vehicle' ),
+			array( $this, 'render_plate_events_field' ),
+			self::PAGE_SLUG,
+			'fsbhoa_vehicle_policy_section',
+			array( 'label_for' => 'fsbhoa_vehicle_plate_events' )
+		);
+
+		add_settings_field(
 			'enable_debug_logging',
 			__( 'Debug Logging', 'fsbhoa-ac-vehicle' ),
 			array( $this, 'render_debug_field' ),
@@ -235,6 +245,7 @@ class FSBHOA_Vehicle_Settings {
 
 		$sanitized['enable_debug_logging'] = ! empty( $input['enable_debug_logging'] ) ? 1 : 0;
 		$sanitized['doorking_events']      = ! empty( $input['doorking_events'] ) ? 1 : 0;
+		$sanitized['plate_events']         = ! empty( $input['plate_events'] ) ? 1 : 0;
 
 		$sanitized['ram_file']    = $this->sanitize_ram_file( $input['ram_file'] ?? '' );
 		$sanitized['lpr_drop_dir'] = $this->sanitize_lpr_drop_dir( $input['lpr_drop_dir'] ?? '' );
@@ -612,6 +623,20 @@ class FSBHOA_Vehicle_Settings {
 		<?php
 	}
 
+	public function render_plate_events_field() {
+		$options = self::get_options();
+		?>
+		<label for="fsbhoa_vehicle_plate_events">
+			<input type="checkbox"
+				 id="fsbhoa_vehicle_plate_events"
+				 name="<?php echo esc_attr( self::OPTION_NAME . '[plate_events]' ); ?>"
+				 value="1"
+				 <?php checked( 1, $options['plate_events'] ); ?> />
+			<?php esc_html_e( 'Log each LPR camera read (entrance and exit lanes) as a vehicle event on its own, with the plate crop and the scene photo, so every vehicle the cameras see shows in the vehicle log and on the monitor. Vehicles without a readable plate show as "NO PLATE". Not matched with DoorKing credentials: a stopgap until correlation is built. Applied without a restart.', 'fsbhoa-ac-vehicle' ); ?>
+		</label>
+		<?php
+	}
+
 	public function render_debug_field() {
 		$options = self::get_options();
 		?>
@@ -830,6 +855,7 @@ class FSBHOA_Vehicle_Settings {
 			'correlation_window'   => absint( $options['correlation_window'] ?? 15 ),
 			'enable_debug_logging' => ! empty( $options['enable_debug_logging'] ) ? 1 : 0,
 			'doorking_events'      => ! empty( $options['doorking_events'] ),
+			'plate_events'         => ! empty( $options['plate_events'] ),
 			'wordpress_host'       => sanitize_text_field( $wp_host ? $wp_host : '127.0.0.1' ),
 			'environment'          => sanitize_text_field( $environment ),
 			'ram_file'             => sanitize_text_field( $options['ram_file'] ?? '' ),
