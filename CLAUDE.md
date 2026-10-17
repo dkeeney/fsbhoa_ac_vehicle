@@ -18,6 +18,8 @@ From these it builds a composite event that describes one vehicle entry. That ev
 
 Plates read on the exit lanes are also logged, as vehicle exits from the community.
 
+**The goal** (2026-10-16): tell the office staff, on the live monitor and with a sound, when a vehicle may have got in without a credential (ran the gate, tailgated, or slipped in some other way), so they know when to look at the cameras. The system can't prove a violation; it points staff at the moment and the photos. With no loop or arm signal available ("Hardware" below), the first version compares DoorKing credentials with plate reads on the entrance lane: each credential admits one vehicle, and each plate read (or vehicle read without a plate) is a vehicle that got in.
+
 ## Plugin split: core owns the vehicle log
 
 Status: **built 2026-10-13** (item 29 in `TODO.md`, item 5 in `fsbhoa_ac_core/TODO.md`).
@@ -84,12 +86,19 @@ This is allowed as long as it can't affect production (see "Environment separati
 ## Hardware
 
 - **Gate controller:** DoorKing 1838-010 Rev AB, 3000-resident capacity. A Wiegand keypad and a windshield RFID sensor are attached to it.
-- **Loop sensor:** Shelly Pro 1, monitoring the loop detector on the entrance lane.
-- **LPR camera:** Speco O4BLP2M, one on each entrance lane and one on each exit lane. Each is mounted on the gate post, pointing away from the gate, so it reads the rear plate after the car has cleared the gate.
-- **Overview camera:** each entrance lane also has an overview (context) camera that sees the vehicle as it passes the gate.
+- **Loop sensor:** planned: a Shelly Pro 1 on a dry contact from the arm's loop detector. Not installed, and not possible for now (traffic arm, below).
+- **Traffic arm:** DoorKing 1601. Its box has outputs for arm up, loop active and up pulse, but we have no key: it's maintained under contract by Open & Shut, and wiring to it would go through them. So no arm or loop signal is available.
+- **Loops:** two, both the arm's: one under the arm and one about 6 ft inside the gate. No loop arms the keypad.
+- **What opens the gate:**
+  - the keypad: `#` and a 4-digit gate code (RAM: `Entry Code`)
+  - a windshield tag (RAM: `Cards`)
+  - a directory call: a visitor finds a resident, who presses 9 to open. Whether RAM records it is still to be seen.
+  - a guard button (there's no guard), a fireman's key switch and an emergency vehicle strobe sensor. These don't go through the DoorKing controller, so RAM never sees them: a vehicle let in by them looks like one with no credential.
+- **LPR camera:** Speco O4BLP2M, one on each entrance lane and one on each exit lane. Each is mounted on the gate post, pointing away from the gate, so it reads the rear plate about 20 ft past the gate, after the car has cleared it. A plate read on an entrance lane therefore means a vehicle got in.
+- **Overview camera:** each entrance lane also has an overview (context) camera that sees the vehicle as it passes the gate, and sees the arm.
 - Each entrance lane has its own complete set: DoorKing controller, loop, LPR camera and overview camera.
-- **What the NVR provides:** for each plate read, the NVR captures the plate crop and a scene photo of the car at the moment of the read (the `..._plate_<PLATE>.jpg` and `..._src.jpg` pairs). The overview camera is a separate camera the service can take its own snapshot from.
-- **NVR:** Speco N64NR, also on our LAN.
+- **Plate reads:** the LPR camera itself captures, for each read, the plate crop and a scene photo of the car (the `..._plate_<PLATE>.jpg` and `..._src.jpg` pairs) and uploads them by FTP ("Plate reads: FTP from the cameras" below). The overview camera is a separate camera the service can take its own snapshot from.
+- **NVR:** Speco N64NR (192.168.107.74), also on our LAN. It also receives the plate reads (a scrolling list in its web app, and a search); its API hasn't been looked at.
 
 ### Testbed workbench
 
@@ -127,6 +136,7 @@ Production today:
 - **North:** one entrance lane, one exit lane.
 - **South:** one entrance lane and one exit lane in use. A second entrance lane exists but is unused; if it's opened, it gets its own DoorKing controller, loop sensor and LPR camera, and is added as another entrance lane.
 - The South entrance's cameras: LPR camera 192.168.107.138, overview camera 192.168.107.131. The testbed's Workbench lane uses them, read-only (see "Tapping production cameras from the testbed").
+- The North entrance's LPR camera: 192.168.107.140.
 
 ### Listeners
 
@@ -163,7 +173,23 @@ Each entrance lane has two cameras, and each entry gets three photos:
 - **Plate text, plate crop and scene photo** from the LPR camera, captured together at the plate read. These come through the NVR (the `..._plate_<PLATE>.jpg` and `..._src.jpg` pairs). Stored as `lpr_image_data` and, for the scene, a second image column (needs DB_VERSION 3).
 - **Overview snapshot** from the lane's overview camera, taken by the service at loop on or loop off. Stored as `context_image_data`.
 
-**Open:** how the service gets plate reads: FTP push (from the NVR or the camera) or the Speco HTTP API. FTP from the LPR camera is known to work (the files in `/home/pi/lpr_ftp_drop` came that way); a first try at HTTP failed, but the cause wasn't looked into. If nothing in production uses a camera's FTP output, pointing it at the testbed for the traffic study affects no one (the user's decision), like the RAM stream. Also open: and whether the overview snapshot comes from the camera or through the NVR. On the testbed, production cameras and the NVR may only be *read*, and pointing their FTP output at the testbed would change their settings. So the testbed needs a way to pull over HTTP, and that is the likelier choice for both machines. Look at the O4BLP2M's and N64NR's APIs (read-only) before deciding. Plate text must keep its spaces, dashes and case (TODO item 13), and `lpr_confidence` should be filled if the camera reports it (item 12). The drop folder path stops being hard-coded either way (item 16).
+Plate text must keep its spaces, dashes and case (TODO item 13). `lpr_confidence` stays empty: the camera reports no confidence (item 12). **Open:** whether the overview snapshot comes from the camera or through the NVR.
+
+### Plate reads: FTP from the cameras
+
+Built 2026-10-17. The cameras upload each read by FTP to the server; `vehicle_service` journals it.
+- **FTP server:** vsftpd on port 2121, set up by `lpr_ftp/setup.sh` (`sudo LPR_FTP_PASSWORD=... ./lpr_ftp/setup.sh <camera IPs>`). The one account, `specolpr`, can only upload, only into its home, the drop folder `/var/lib/fsbhoa/lpr_drop` (group `www-data`), and only from the camera addresses (TCP wrappers). Uploads older than 7 days are deleted (`systemd-tmpfiles`); a scene photo is about 1 MB.
+- **Camera settings** (Network > TCP/IP > FTP): server, port 2121, user `specolpr`, path `/`. The camera cuts a longer password to 15 characters without saying so. It uploads to `<path>/<its MAC>/VEHICE/<date>/<hour>/`, and needs to set its folders' permissions (with vsftpd's `chmod_enable=NO` its uploads fail). The FTP target allows one server only. On the testbed the password is in `~/.config/fsbhoa/lpr_ftp` (root, 0600).
+- **What arrives:** the plate crop (about 4 KB) and the scene photo (about 1 MB), each uploaded as `.tmp` and renamed, the crop about a second before the photo, 1 to 7 seconds after the capture; and the hour's summary `VEHICE_<date>-<hour>.txt`, one line per read with the camera's name, MAC and address. "Capture Plate Absence Vehicle" is on, so a vehicle without a readable plate should arrive too; what its files are called is still to be seen.
+- **Reader** (`vehicle_service/lpr.go`): watches the folder set by the "LPR Upload Folder" setting (`lpr_drop_dir`), pairs each crop with its scene photo by the capture time in the names (waiting up to 10 seconds for the other), and journals one `plate` entry per read: the plate, the capture time, both files and their arrival times, `missing` (`plate` or `scene`), and the camera and its lane (by its address from the summary). Other files are journaled as `lpr_file`. Files already there when it starts are not read. Plates don't feed the old correlator, and the files are left in place.
+- **Testbed and production:** the south entrance camera uploads to the testbed (the user's decision; nothing in production used its FTP output). Production's `vehicle_service` will need the uploads instead, or a second source such as the NVR.
+
+**The cameras' API** (looked at read-only, 2026-10-16): TVT firmware under Speco's name (firmware 5.1.1.0, API 1.7): XML over HTTP POST to `/<Command>` with Basic authentication, no HTTPS. Read-only commands used: `GetDeviceInfo`, `GetVehicleConfig`, `GetAlarmStatus`. **Never send `GetAlarmServerConfig`**: it blocked the testbed's address (the camera's ports 80 and 554) for a few minutes, twice, the second time with a valid login. Also found:
+- `GetAlarmStatus` gives only a true/false `vehicleAlarm`, held for 20 seconds after a read, with no plate, so polling can't replace the uploads.
+- Saving to the SD card is off, so the camera's image search (`GetImagesPage`) has nothing.
+- Plate detection settings: `capturePlateAbsenceVehicle` on, repeat suppression (`dedupMode`, 5 s) off, direction "no limit" (can be "approach" or "further"), no confidence value.
+- The cameras have an `automation` user for this (Normal user); give it only Remote preview and Remote view logs, and a strong password.
+- Other events the firmware offers (line crossing, pass-line counting) don't appear in the O4BLP2M's menus.
 
 ### Event payload changes
 
@@ -172,7 +198,8 @@ Added to what `vehicle_service` sends: `auth_type` (TODO item 7), `direction`, a
 ### Build order
 
 0. **Record real traffic.** *Built 2026-10-10:* the RAM listener (`vehicle_service/ram.go`; replaced on 2026-10-13 by the Disk File reader, so the `ram_connect`, `ram_resume`, `ram_disconnect` and `ram_refused` entries below no longer occur), the journal (`journal.go`), loop off, and the "RAM Stream Sources" and "Device Sources" settings (Device Sources was replaced by the lane tables in step 1). The journal is `/var/lib/fsbhoa/vehicle_journal/journal-YYYY-MM-DD.jsonl`, kept 30 days; entry kinds are `ram_record`, `ram_repeat` (a collapsed flood), `ram_connect`, `ram_resume` (a connection held across a restart, below), `ram_disconnect`, `ram_refused`, `loop`, `loop_invalid`, `plate` and `webhook_refused`. DoorKing records are journaled only; they don't feed the old single-event correlator. Not built yet: overview snapshots (needs the cameras' snapshot URL and login). Before writing the correlation, `vehicle_service` records every raw input (DoorKing records, loop on and off, plates) with its arrival time to a journal, one JSON line per input, without correlating anything. Run it against a real gate to check the scenario table, and keep the recordings: the correlation code is then tested by replaying them, and again whenever the rules change. This needs:
-   - **The loop signal at a real gate.** A new cable from the loop detector to a Shelly. Take it from a spare output on the arm's loop detector (many detectors have a second relay) as a dry contact. Never connect to the loop wire itself: that would change what the arm's detector sees and could affect the gate.
+   - **The loop signal at a real gate.** A new cable from the loop detector to a Shelly. Take it from a spare output on the arm's loop detector (many detectors have a second relay) as a dry contact. Never connect to the loop wire itself: that would change what the arm's detector sees and could affect the gate. **Not available for now** (2026-10-16): the arm's box is maintained under contract by another company, and we have no key ("Hardware"). Until then the study records DoorKing records and plate reads only.
+   - **Plate reads.** *Built 2026-10-17:* "Plate reads: FTP from the cameras" above; the south entrance camera uploads to the testbed.
    - **The live stream from the production RAM.** The office RAM doesn't stream today, so pointing its Live Streaming output at the testbed for the study affects no one (the user's decision, 2026-10-10). RAM probably streams to only one address, so it moves to the production server when production's own `vehicle_service` needs it.
    - **Overview camera snapshots** at both loop on and loop off, to choose which moment gives the better context photo.
 1. Settings: the lane tables and RAM sources, written to `vehicle_service.json`. *Built 2026-10-11:* the Entrance Lanes and Exit Lanes tables on the settings page ("Lanes and devices" above; a blank row adds a lane, a cleared name removes one), the `gates` and `exit_lanes` lists and `ram_port` in `vehicle_service.json`, and `vehicle_service/gates.go`. The lanes' devices replace the "Device Sources" list as the webhook allowlist (an older config's `device_sources` is still honored). The journal tags `ram_record` entries with their `gate` (by RAM account) and `loop` entries with their `gate`, `direction` and `device` (by address). Applied without a restart. Correlation doesn't use the gates yet.

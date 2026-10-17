@@ -1,0 +1,4 @@
+# /etc/tmpfiles.d/fsbhoa-lpr-drop.conf: the LPR cameras' FTP drop folder.
+# Installed by lpr_ftp/setup.sh. Uploads older than 7 days are deleted by
+# systemd-tmpfiles-clean (daily); each scene photo is about 1 MB.
+d /var/lib/fsbhoa/lpr_drop 2775 specolpr www-data 7d

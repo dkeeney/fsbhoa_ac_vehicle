@@ -1,0 +1,6 @@
+# /etc/pam.d/vsftpd_lpr: PAM for the LPR upload account. Installed by lpr_ftp/setup.sh.
+# Unlike Debian's /etc/pam.d/vsftpd, no pam_shells: the account's shell is nologin.
+auth	required	pam_listfile.so item=user sense=allow file=/etc/vsftpd.userlist onerr=fail
+@include common-auth
+@include common-account
+@include common-session

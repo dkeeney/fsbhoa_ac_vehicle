@@ -8,24 +8,11 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"path/filepath"
-	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"github.com/fsnotify/fsnotify"
 )
-
-// Config holds runtime parameters passed via CLI flags or config file
-type Config struct {
-	WatchDir       string
-	HTTPPort       string
-	WPWebhookURL   string
-	APIKey         string
-	WindowDuration time.Duration
-}
 
 // VehicleEvent aggregates the three disparate data streams
 type VehicleEvent struct {
@@ -46,7 +33,6 @@ type GateStateManager struct {
 	journal      *Journal
 	currentEvent *VehicleEvent
 	expireTimer  *time.Timer
-	plateRegex   *regexp.Regexp
 }
 
 // startTime is when the service started, for the health check's uptime
@@ -68,7 +54,6 @@ func NewGateStateManager(cfg *ServiceConfig, dispatcher *Dispatcher, journal *Jo
 		cfg:        cfg,
 		dispatcher: dispatcher,
 		journal:    journal,
-		plateRegex: regexp.MustCompile(`VEHICE_(\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2}-\d+)_plate_([A-Z0-9]+)\.jpg$`),
 	}
 }
 
@@ -93,40 +78,6 @@ func (gsm *GateStateManager) HandleDoorKingEntry(device, code string) {
 	gsm.ensureActiveEvent()
 	gsm.currentEvent.DoorKingDevice = device
 	gsm.currentEvent.DoorKingCode = code
-}
-
-// HandlePlateImage processes the newly written Speco FTP file
-func (gsm *GateStateManager) HandlePlateImage(fullPath string) {
-	gsm.mu.Lock()
-	defer gsm.mu.Unlock()
-
-	filename := filepath.Base(fullPath)
-	matches := gsm.plateRegex.FindStringSubmatch(filename)
-	if len(matches) < 3 {
-		return // Not a plate crop image
-	}
-
-	plateStr := matches[2]
-	gsm.debugf("[STATE] Speco LPR Capture: Plate=%s (File: %s)", plateStr, filename)
-
-	// Journal the read before anything else; the scene file is the plate file's _src partner
-	sceneFile := gsm.plateRegex.ReplaceAllString(fullPath, "VEHICE_${1}_src.jpg")
-	_, sceneErr := os.Stat(sceneFile)
-	entry := map[string]interface{}{
-		"plate": plateStr, "file": fullPath, "camera_time": matches[1], "scene_found": sceneErr == nil,
-	}
-	if fi, err := os.Stat(fullPath); err == nil {
-		entry["size"] = fi.Size()
-	}
-	gsm.journal.Write("plate", entry)
-
-	gsm.ensureActiveEvent()
-	gsm.currentEvent.LicensePlate = plateStr
-	gsm.currentEvent.PlateImageRel = fullPath
-
-	if sceneErr == nil {
-		gsm.currentEvent.SceneImageRel = sceneFile
-	}
 }
 
 func (gsm *GateStateManager) ensureActiveEvent() {
@@ -218,52 +169,6 @@ func readImageB64(path, label string) string {
 	return base64.StdEncoding.EncodeToString(data)
 }
 
-// WatchDropDir listens for new files delivered by the Speco camera via FTP
-func (gsm *GateStateManager) WatchDropDir() {
-	watcher, err := fsnotify.NewWatcher()
-	if err != nil {
-		log.Fatalf("[FATAL] Watcher creation failed: %v", err)
-	}
-	defer watcher.Close()
-
-	// Walk and watch all subdirectories
-	err = filepath.Walk(gsm.cfg.WatchDir, func(path string, info os.FileInfo, err error) error {
-		if info != nil && info.IsDir() {
-			return watcher.Add(path)
-		}
-		return nil
-	})
-	if err != nil {
-		log.Printf("[WARN] Error walking watch dir: %v", err)
-	}
-
-	for {
-		select {
-		case event, ok := <-watcher.Events:
-			if !ok {
-				return
-			}
-			if event.Op&fsnotify.Create == fsnotify.Create {
-				fi, err := os.Stat(event.Name)
-				if err == nil && fi.IsDir() {
-					watcher.Add(event.Name)
-				} else if err == nil {
-					// Debounce slightly to ensure FTP completed file write
-					go func(path string) {
-						time.Sleep(250 * time.Millisecond)
-						gsm.HandlePlateImage(path)
-					}(event.Name)
-				}
-			}
-		case err, ok := <-watcher.Errors:
-			if !ok {
-				return
-			}
-			log.Printf("[ERROR] fsnotify error: %v", err)
-		}
-	}
-}
-
 func main() {
 	configPath := flag.String("config", "/var/lib/fsbhoa/vehicle_service.json", "Path to JSON config file")
 	flag.Parse()
@@ -306,13 +211,10 @@ func main() {
 		go ramFile.Run()
 	}
 
-	// Ensure drop directory exists before starting watcher
-	if err := os.MkdirAll(cfg.WatchDir, 0755); err != nil {
-		log.Printf("[WARN] Could not create watch directory %s: %v", cfg.WatchDir, err)
-	}
-
-	// Start drop directory watcher
-	go gsm.WatchDropDir()
+	// Plate reads, from the LPR cameras' FTP uploads. Journaled (traffic study) only; they
+	// don't feed the correlator until per-lane correlation is built.
+	lprDrop := NewLPRDrop(cfg.LPRDropDir, journal, gsm.debugf)
+	go lprDrop.Run()
 
 	// The gates' devices are the only addresses (besides this machine) that may call the
 	// webhooks, and a device's address tells which gate and lane a call is from.
@@ -324,6 +226,7 @@ func main() {
 		gates.Store(g)
 		devices.Store(&s)
 		dkRecords.SetGates(g)
+		lprDrop.SetGates(g)
 		if g.Count() == 0 {
 			log.Printf("[CONFIG] WARNING: no lanes configured; DoorKing records and loop changes aren't matched to a lane, and only this machine may call the webhooks")
 		}
@@ -414,6 +317,6 @@ func main() {
 	// All interfaces: the Shellys (and cameras) at the gates call in over the LAN. The
 	// webhooks accept only configured devices, and /health only this machine.
 	listenAddr := fmt.Sprintf(":%d", cfg.DaemonPort)
-	log.Printf("FSBHOA Vehicle Service listening on %s (Watch: %s, Queue: %s, Journal: %s, Environment: %s)", listenAddr, cfg.WatchDir, cfg.QueueDir, cfg.JournalDir, cfg.Environment)
+	log.Printf("FSBHOA Vehicle Service listening on %s (LPR uploads: %s, Queue: %s, Journal: %s, Environment: %s)", listenAddr, cfg.LPRDropDir, cfg.QueueDir, cfg.JournalDir, cfg.Environment)
 	log.Fatal(http.ListenAndServe(listenAddr, mux))
 }

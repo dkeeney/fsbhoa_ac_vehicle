@@ -24,6 +24,9 @@ class FSBHOA_Vehicle_Settings {
 	const RAM_PC_STATUS_FILE  = 'ram_pc_status.txt';
 	const RAM_PC_STATUS_STALE = 300;
 
+	// Where the LPR cameras' FTP uploads land (lpr_ftp/setup.sh makes it the upload account's home).
+	const LPR_DROP_DIR_DEFAULT = '/var/lib/fsbhoa/lpr_drop';
+
     private $vehicle_config_path = '/var/lib/fsbhoa/vehicle_service.json';
 	private static $instance = null;
 
@@ -66,6 +69,7 @@ class FSBHOA_Vehicle_Settings {
 			'enable_debug_logging' => 0,
 			'doorking_events'      => 0,
 			'ram_file'             => '',
+			'lpr_drop_dir'         => self::LPR_DROP_DIR_DEFAULT,
 			'gates'                => array(),
 			'exit_lanes'           => array(),
 		);
@@ -141,6 +145,15 @@ class FSBHOA_Vehicle_Settings {
 			self::PAGE_SLUG,
 			'fsbhoa_vehicle_sources_section',
 			array( 'label_for' => 'fsbhoa_vehicle_ram_file' )
+		);
+
+		add_settings_field(
+			'lpr_drop_dir',
+			__( 'LPR Upload Folder', 'fsbhoa-ac-vehicle' ),
+			array( $this, 'render_lpr_drop_dir_field' ),
+			self::PAGE_SLUG,
+			'fsbhoa_vehicle_sources_section',
+			array( 'label_for' => 'fsbhoa_vehicle_lpr_drop_dir' )
 		);
 
 		add_settings_field(
@@ -224,6 +237,7 @@ class FSBHOA_Vehicle_Settings {
 		$sanitized['doorking_events']      = ! empty( $input['doorking_events'] ) ? 1 : 0;
 
 		$sanitized['ram_file']    = $this->sanitize_ram_file( $input['ram_file'] ?? '' );
+		$sanitized['lpr_drop_dir'] = $this->sanitize_lpr_drop_dir( $input['lpr_drop_dir'] ?? '' );
 		$ips                      = array();
 		$sanitized['gates']       = $this->sanitize_lanes( $input['gates'] ?? array(), 'gates', $ips );
 		$sanitized['exit_lanes']  = $this->sanitize_lanes( $input['exit_lanes'] ?? array(), 'exit_lanes', $ips );
@@ -284,6 +298,30 @@ class FSBHOA_Vehicle_Settings {
 				)
 			);
 			return '';
+		}
+		return $path;
+	}
+
+	/**
+	 * Keeps the LPR Upload Folder if it is a full path; empty means the default.
+	 */
+	private function sanitize_lpr_drop_dir( $value ) {
+		$path = untrailingslashit( trim( sanitize_text_field( (string) $value ) ) );
+		if ( '' === $path ) {
+			return self::LPR_DROP_DIR_DEFAULT;
+		}
+		if ( '/' !== substr( $path, 0, 1 ) || false !== strpos( $path, '..' ) ) {
+			add_settings_error(
+				self::OPTION_NAME,
+				'fsbhoa_vehicle_lpr_drop_dir',
+				sprintf(
+					/* translators: 1: the path entered, 2: the default path */
+					__( 'LPR Upload Folder %1$s was not saved: it must be a full path. Using %2$s.', 'fsbhoa-ac-vehicle' ),
+					$path,
+					self::LPR_DROP_DIR_DEFAULT
+				)
+			);
+			return self::LPR_DROP_DIR_DEFAULT;
 		}
 		return $path;
 	}
@@ -524,6 +562,21 @@ class FSBHOA_Vehicle_Settings {
 				'<code>' . esc_html( self::default_ram_file() ) . '</code>'
 			);
 			?>
+		</p>
+		<?php
+	}
+
+	public function render_lpr_drop_dir_field() {
+		$options = self::get_options();
+		?>
+		<input type="text"
+				 id="fsbhoa_vehicle_lpr_drop_dir"
+				 name="<?php echo esc_attr( self::OPTION_NAME . '[lpr_drop_dir]' ); ?>"
+				 value="<?php echo esc_attr( $options['lpr_drop_dir'] ); ?>"
+				 placeholder="<?php echo esc_attr( self::LPR_DROP_DIR_DEFAULT ); ?>"
+				 class="large-text code" />
+		<p class="description">
+			<?php esc_html_e( 'Where the LPR cameras\' FTP uploads land: plate crops, scene photos and hourly summaries, in a folder per camera (its MAC address). The FTP server (vsftpd, port 2121, user specolpr) is set up by lpr_ftp/setup.sh in this plugin, which makes this folder the upload account\'s home; in each camera, set Network > TCP/IP > FTP to this server, port 2121, path /. Each read is recorded in the journal; for now nothing is sent to the vehicle log. Uploads are deleted after 7 days. Restart vehicle_service after changing this.', 'fsbhoa-ac-vehicle' ); ?>
 		</p>
 		<?php
 	}
@@ -780,6 +833,7 @@ class FSBHOA_Vehicle_Settings {
 			'wordpress_host'       => sanitize_text_field( $wp_host ? $wp_host : '127.0.0.1' ),
 			'environment'          => sanitize_text_field( $environment ),
 			'ram_file'             => sanitize_text_field( $options['ram_file'] ?? '' ),
+			'lpr_drop_dir'         => sanitize_text_field( $options['lpr_drop_dir'] ?? self::LPR_DROP_DIR_DEFAULT ),
 			'gates'                => array_values( is_array( $options['gates'] ?? null ) ? $options['gates'] : array() ),
 			'exit_lanes'           => array_values( is_array( $options['exit_lanes'] ?? null ) ? $options['exit_lanes'] : array() ),
 		);

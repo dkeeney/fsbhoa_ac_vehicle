@@ -99,6 +99,16 @@ func (g *Gates) ForAddr(hostport string) (GateDevice, bool) {
 	return d, ok
 }
 
+// ForIP returns the gate device at an IP address, such as a camera's from its uploads.
+func (g *Gates) ForIP(ip string) (GateDevice, bool) {
+	addr, err := netip.ParseAddr(strings.TrimSpace(ip))
+	if err != nil {
+		return GateDevice{}, false
+	}
+	d, ok := g.byAddr[addr.Unmap()]
+	return d, ok
+}
+
 // DeviceSources is the webhook allowlist: every lane's devices, plus any extra addresses.
 func (g *Gates) DeviceSources(extra []string) Sources {
 	s := NewSources(extra)

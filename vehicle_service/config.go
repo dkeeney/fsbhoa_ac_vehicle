@@ -29,9 +29,10 @@ type ServiceConfig struct {
 	JournalDays    int              `json:"journal_days"`    // journal files kept this many days
 	// RAM's Live Streaming Disk File (ramfile.go), the source of DoorKing records. Empty: none.
 	RAMFile string `json:"ram_file"`
+	// Where the LPR cameras' FTP uploads land (lpr.go; lpr_ftp/ sets up the FTP server)
+	LPRDropDir string `json:"lpr_drop_dir"`
 
 	// Local runtime fields (not in JSON, populated via flags/defaults)
-	WatchDir       string        `json:"-"`
 	ConfigPath     string        `json:"-"`
 	WindowDuration time.Duration `json:"-"`
 	WPWebhookURL   string        `json:"-"`
@@ -46,7 +47,7 @@ func LoadConfig(path string) (*ServiceConfig, error) {
 		CorrelationWindow:  15,
 		EnableDebugLogging: 0,
 		WordPressHost:      "127.0.0.1",
-		WatchDir:           "/home/pi/lpr_ftp_drop",
+		LPRDropDir:         "/var/lib/fsbhoa/lpr_drop",
 		QueueDir:           "/var/lib/fsbhoa/vehicle_queue",
 		JournalDir:         "/var/lib/fsbhoa/vehicle_journal",
 		JournalDays:        30,
@@ -80,6 +81,10 @@ func LoadConfig(path string) (*ServiceConfig, error) {
 		cfg.WordPressHost = "127.0.0.1"
 	}
 	cfg.WPWebhookURL = "http://127.0.0.1/wp-json/fsbhoa/v1/vehicle-event"
+
+	if cfg.LPRDropDir == "" {
+		cfg.LPRDropDir = "/var/lib/fsbhoa/lpr_drop"
+	}
 
 	if cfg.JournalDays <= 0 {
 		cfg.JournalDays = 30

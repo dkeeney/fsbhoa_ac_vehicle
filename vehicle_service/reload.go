@@ -73,5 +73,6 @@ func restartNeeded(old, cur *ServiceConfig) []string {
 	check("journal_dir", old.JournalDir != cur.JournalDir)
 	check("journal_days", old.JournalDays != cur.JournalDays)
 	check("ram_file", old.RAMFile != cur.RAMFile)
+	check("lpr_drop_dir", old.LPRDropDir != cur.LPRDropDir)
 	return changed
 }
