@@ -219,6 +219,11 @@ func main() {
 	lprDrop.SetEvents(plateEvents)
 	go lprDrop.Run()
 
+	// Motion in the overview and keypad cameras' regions, from their snapshots: journaled,
+	// with the frames of each pass kept. Applied without a restart.
+	motion := NewMotion(cfg.OverviewFrameDir, cfg.OverviewFrameDays, journal, gsm.debugf)
+	go motion.Run()
+
 	// The gates' devices are the only addresses (besides this machine) that may call the
 	// webhooks, and a device's address tells which gate and lane a call is from.
 	var gates atomic.Pointer[Gates]
@@ -230,11 +235,13 @@ func main() {
 		devices.Store(&s)
 		dkRecords.SetGates(g)
 		lprDrop.SetGates(g)
+		motion.SetGates(g)
 		if g.Count() == 0 {
 			log.Printf("[CONFIG] WARNING: no lanes configured; DoorKing records and loop changes aren't matched to a lane, and only this machine may call the webhooks")
 		}
 	}
 	setGates(cfg)
+	motion.SetRegions(cfg.MotionRegions)
 
 	// Saving the vehicle settings rewrites the config file. Apply the lanes and the
 	// DoorKing-only and plate read events settings without a restart.
@@ -242,6 +249,7 @@ func main() {
 		setGates(next)
 		dkEvents.SetEnabled(next.DoorKingEvents)
 		plateEvents.SetEnabled(next.PlateEvents)
+		motion.SetRegions(next.MotionRegions)
 		log.Printf("[CONFIG] Reloaded: %d entrance lanes, %d exit lanes", len(next.Gates), len(next.ExitLanes))
 		if changed := restartNeeded(cfg, next); len(changed) > 0 {
 			log.Printf("[CONFIG] Changed settings that need a restart of vehicle_service to apply: %v", changed)

@@ -73,6 +73,7 @@ class FSBHOA_Vehicle_Settings {
 			'lpr_drop_dir'         => self::LPR_DROP_DIR_DEFAULT,
 			'gates'                => array(),
 			'exit_lanes'           => array(),
+			'motion_regions'       => array(),
 		);
 	}
 
@@ -175,6 +176,15 @@ class FSBHOA_Vehicle_Settings {
 			array( 'table' => 'exit_lanes' )
 		);
 
+		add_settings_field(
+			'motion_regions',
+			__( 'Motion Regions', 'fsbhoa-ac-vehicle' ),
+			array( $this, 'render_motion_regions_field' ),
+			self::PAGE_SLUG,
+			'fsbhoa_vehicle_sources_section',
+			array( 'label_for' => 'fsbhoa_vehicle_motion_regions' )
+		);
+
 		add_settings_section(
 			'fsbhoa_vehicle_policy_section',
 			__( 'Correlation & Logging', 'fsbhoa-ac-vehicle' ),
@@ -252,6 +262,7 @@ class FSBHOA_Vehicle_Settings {
 		$ips                      = array();
 		$sanitized['gates']       = $this->sanitize_lanes( $input['gates'] ?? array(), 'gates', $ips );
 		$sanitized['exit_lanes']  = $this->sanitize_lanes( $input['exit_lanes'] ?? array(), 'exit_lanes', $ips );
+		$sanitized['motion_regions'] = $this->sanitize_motion_regions( $input['motion_regions'] ?? '', $sanitized );
 
         if ( ! $this->write_config_from_array( $sanitized ) ) {
 			add_settings_error(
@@ -335,6 +346,102 @@ class FSBHOA_Vehicle_Settings {
 			return self::LPR_DROP_DIR_DEFAULT;
 		}
 		return $path;
+	}
+
+	/**
+	 * The cameras motion regions may be set on: every lane's overview and keypad camera.
+	 *
+	 * @return string[] camera IP addresses
+	 */
+	private static function motion_cameras( $options ) {
+		$cameras = array();
+		foreach ( array( 'gates', 'exit_lanes' ) as $table ) {
+			foreach ( (array) ( $options[ $table ] ?? array() ) as $lane ) {
+				foreach ( array( 'overview_ip', 'keypad_ip' ) as $key ) {
+					if ( ! empty( $lane[ $key ] ) ) {
+						$cameras[] = $lane[ $key ];
+					}
+				}
+			}
+		}
+		return $cameras;
+	}
+
+	/**
+	 * Parses the Motion Regions text, one region a line:
+	 * "<camera IP> <name> <left> <top> <right> <bottom>", the edges in percent of the picture.
+	 * A line that doesn't fit is dropped with a message.
+	 *
+	 * @return array[] camera, name, left, top, right, bottom
+	 */
+	private function sanitize_motion_regions( $text, $options ) {
+		if ( is_array( $text ) ) { // already parsed (an option saved before)
+			$text = self::motion_regions_text( $text );
+		}
+		$cameras = self::motion_cameras( $options );
+		$regions = array();
+		$seen    = array();
+		foreach ( preg_split( '/\r\n|\r|\n/', (string) $text ) as $line ) {
+			$line = trim( sanitize_text_field( $line ) );
+			if ( '' === $line || '#' === $line[0] ) {
+				continue;
+			}
+			$parts = preg_split( '/\s+/', $line );
+			$error = '';
+			if ( 6 !== count( $parts ) ) {
+				$error = __( 'it needs a camera address, a name and four edges', 'fsbhoa-ac-vehicle' );
+			} elseif ( ! in_array( $parts[0], $cameras, true ) ) {
+				$error = __( 'the camera is not a lane\'s overview or keypad camera', 'fsbhoa-ac-vehicle' );
+			} elseif ( ! preg_match( '/^[A-Za-z0-9_-]{1,20}$/', $parts[1] ) ) {
+				$error = __( 'the name may have only letters, digits, - and _', 'fsbhoa-ac-vehicle' );
+			} elseif ( isset( $seen[ $parts[0] . ' ' . $parts[1] ] ) ) {
+				$error = __( 'the camera already has a region of that name', 'fsbhoa-ac-vehicle' );
+			} else {
+				$edges = array_map( 'floatval', array_slice( $parts, 2 ) );
+				foreach ( array_slice( $parts, 2 ) as $edge ) {
+					if ( ! is_numeric( $edge ) || $edge < 0 || $edge > 100 ) {
+						$error = __( 'the edges must be numbers from 0 to 100', 'fsbhoa-ac-vehicle' );
+					}
+				}
+				if ( '' === $error && ( $edges[0] >= $edges[2] || $edges[1] >= $edges[3] ) ) {
+					$error = __( 'left must be less than right, and top less than bottom', 'fsbhoa-ac-vehicle' );
+				}
+			}
+			if ( '' !== $error ) {
+				add_settings_error(
+					self::OPTION_NAME,
+					'fsbhoa_vehicle_motion_region',
+					sprintf(
+						/* translators: 1: the line entered, 2: what is wrong with it */
+						__( 'Motion region "%1$s" was not saved: %2$s.', 'fsbhoa-ac-vehicle' ),
+						$line,
+						$error
+					)
+				);
+				continue;
+			}
+			$seen[ $parts[0] . ' ' . $parts[1] ] = true;
+			$regions[] = array(
+				'camera' => $parts[0],
+				'name'   => $parts[1],
+				'left'   => $edges[0],
+				'top'    => $edges[1],
+				'right'  => $edges[2],
+				'bottom' => $edges[3],
+			);
+		}
+		return $regions;
+	}
+
+	/**
+	 * The saved regions as the field's text, one a line.
+	 */
+	private static function motion_regions_text( $regions ) {
+		$lines = array();
+		foreach ( (array) $regions as $r ) {
+			$lines[] = implode( ' ', array( $r['camera'], $r['name'], $r['left'], $r['top'], $r['right'], $r['bottom'] ) );
+		}
+		return implode( "\n", $lines );
 	}
 
 	/**
@@ -589,6 +696,20 @@ class FSBHOA_Vehicle_Settings {
 				 class="large-text code" />
 		<p class="description">
 			<?php esc_html_e( 'Where the LPR cameras\' FTP uploads land: plate crops, scene photos and hourly summaries, in a folder per camera (its MAC address). The FTP server (vsftpd, port 2121, user specolpr) is set up by lpr_ftp/setup.sh in this plugin, which makes this folder the upload account\'s home; in each camera, set Network > TCP/IP > FTP to this server, port 2121, path /. Each read is recorded in the journal; for now nothing is sent to the vehicle log. Uploads are deleted after 7 days. Restart vehicle_service after changing this.', 'fsbhoa-ac-vehicle' ); ?>
+		</p>
+		<?php
+	}
+
+	public function render_motion_regions_field() {
+		$options = self::get_options();
+		?>
+		<textarea id="fsbhoa_vehicle_motion_regions"
+				 name="<?php echo esc_attr( self::OPTION_NAME . '[motion_regions]' ); ?>"
+				 rows="5"
+				 class="large-text code"
+				 placeholder="192.168.107.131 gate 54 20 82 50"><?php echo esc_textarea( self::motion_regions_text( $options['motion_regions'] ) ); ?></textarea>
+		<p class="description">
+			<?php esc_html_e( 'Areas of the overview and keypad cameras\' pictures that vehicle_service watches for motion, one a line: the camera\'s address (a lane\'s overview or keypad camera), a name (gate, arm, keypad), then the left, top, right and bottom edges in percent of the picture\'s width and height. It compares the camera\'s snapshot once a second; each pass of motion is recorded in the journal, and its frames are kept, half size, for 3 days in /var/lib/fsbhoa/overview_frames. Applied without a restart.', 'fsbhoa-ac-vehicle' ); ?>
 		</p>
 		<?php
 	}
@@ -863,6 +984,7 @@ class FSBHOA_Vehicle_Settings {
 			'lpr_drop_dir'         => sanitize_text_field( $options['lpr_drop_dir'] ?? self::LPR_DROP_DIR_DEFAULT ),
 			'gates'                => array_values( is_array( $options['gates'] ?? null ) ? $options['gates'] : array() ),
 			'exit_lanes'           => array_values( is_array( $options['exit_lanes'] ?? null ) ? $options['exit_lanes'] : array() ),
+			'motion_regions'       => array_values( is_array( $options['motion_regions'] ?? null ) ? $options['motion_regions'] : array() ),
 		);
 
 		$json_data = json_encode($config, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES );

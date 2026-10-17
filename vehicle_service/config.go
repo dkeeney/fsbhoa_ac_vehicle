@@ -32,6 +32,10 @@ type ServiceConfig struct {
 	RAMFile string `json:"ram_file"`
 	// Where the LPR cameras' FTP uploads land (lpr.go; lpr_ftp/ sets up the FTP server)
 	LPRDropDir string `json:"lpr_drop_dir"`
+	// Motion detection on the overview and keypad cameras (motion.go). No regions: none.
+	MotionRegions     []MotionRegion `json:"motion_regions"`
+	OverviewFrameDir  string         `json:"overview_frame_dir"`  // frames kept for each pass of motion
+	OverviewFrameDays int            `json:"overview_frame_days"` // kept this many days
 
 	// Local runtime fields (not in JSON, populated via flags/defaults)
 	ConfigPath     string        `json:"-"`
@@ -49,6 +53,8 @@ func LoadConfig(path string) (*ServiceConfig, error) {
 		EnableDebugLogging: 0,
 		WordPressHost:      "127.0.0.1",
 		LPRDropDir:         "/var/lib/fsbhoa/lpr_drop",
+		OverviewFrameDir:   "/var/lib/fsbhoa/overview_frames",
+		OverviewFrameDays:  3,
 		QueueDir:           "/var/lib/fsbhoa/vehicle_queue",
 		JournalDir:         "/var/lib/fsbhoa/vehicle_journal",
 		JournalDays:        30,
@@ -85,6 +91,13 @@ func LoadConfig(path string) (*ServiceConfig, error) {
 
 	if cfg.LPRDropDir == "" {
 		cfg.LPRDropDir = "/var/lib/fsbhoa/lpr_drop"
+	}
+
+	if cfg.OverviewFrameDir == "" {
+		cfg.OverviewFrameDir = "/var/lib/fsbhoa/overview_frames"
+	}
+	if cfg.OverviewFrameDays <= 0 {
+		cfg.OverviewFrameDays = 3
 	}
 
 	if cfg.JournalDays <= 0 {
