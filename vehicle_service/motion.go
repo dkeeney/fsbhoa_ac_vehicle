@@ -60,7 +60,7 @@ const (
 	motionShare        = 0.03 // a region moved if this share of its pixels changed
 	brightScale        = 4    // "bright" regions are measured on 4 x 4 averages: at full size, sunlit specks in the hedge count as bright
 	brightLevel        = 170  // an averaged pixel is bright at this brightness (of 255)
-	brightOnShare      = 0.08 // a "bright" region is on when this share of its averaged pixels are bright (the arm: 0.15 to 0.17 up, 0.01 down)
+	brightOnShare      = 0.05 // a "bright" region is on when this share of its averaged pixels are bright (the arm, live: 0.10 to 0.11 up, 0.006 to 0.019 down)
 	brightSettleFrames = 2    // a "bright" region changes state after this many frames agree
 	motionQuietFrames  = 3    // a region's motion ends after this many still frames
 	motionPreroll      = 3    // frames kept from before the first motion
