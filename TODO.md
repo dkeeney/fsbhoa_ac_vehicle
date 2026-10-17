@@ -114,4 +114,4 @@ Items 6, 9, 10 and 11 come down to one redesign: keep one in-progress event per 
   - a credential and no read: not an alert (turned around, or the plate was missed)
   - Before alerting, record both side by side for a week or two (the journal: `ram_record` and `plate`) to measure the time from credential to plate, how often plates are missed, and whether directory calls appear in RAM. The fireman's key and the emergency strobe sensor open the gate without RAM seeing it, so those will raise false alerts.
   - Run it silently first (flags on the cards); turn the sound on once false alerts are rare. The monitor column, the sound and an acknowledge button are core's.
-  - Still to set up: the north entrance camera (192.168.107.140) uploading to the testbed (the user's decision).
+  - All four LPR cameras upload to the testbed since 2026-10-17.

@@ -136,7 +136,14 @@ Production today:
 - **North:** one entrance lane, one exit lane.
 - **South:** one entrance lane and one exit lane in use. A second entrance lane exists but is unused; if it's opened, it gets its own DoorKing controller, loop sensor and LPR camera, and is added as another entrance lane.
 - The South entrance's cameras: LPR camera 192.168.107.138, overview camera 192.168.107.131. The testbed's Workbench lane uses them, read-only (see "Tapping production cameras from the testbed").
-- The North entrance's LPR camera: 192.168.107.140.
+- The LPR cameras, with the MAC folder each uploads into ("Plate reads: FTP from the cameras"):
+
+  | Lane | Address | MAC folder |
+  |---|---|---|
+  | South entrance | 192.168.107.138 | `5c-f2-07-5f-fd-97` |
+  | North entrance | 192.168.107.140 | `5c-f2-07-5f-fd-9d` |
+  | South exit | 192.168.107.137 | `5c-f2-07-5f-fd-be` |
+  | North exit | 192.168.107.139 | `5c-f2-07-5f-fd-88` |
 
 ### Listeners
 
@@ -182,7 +189,7 @@ Built 2026-10-17. The cameras upload each read by FTP to the server; `vehicle_se
 - **Camera settings** (Network > TCP/IP > FTP): server, port 2121, user `specolpr`, path `/`. The camera cuts a longer password to 15 characters without saying so. It uploads to `<path>/<its MAC>/VEHICE/<date>/<hour>/`, and needs to set its folders' permissions (with vsftpd's `chmod_enable=NO` its uploads fail). The FTP target allows one server only. On the testbed the password is in `~/.config/fsbhoa/lpr_ftp` (root, 0600).
 - **What arrives:** the plate crop (about 4 KB) and the scene photo (about 1 MB), each uploaded as `.tmp` and renamed, the crop about a second before the photo, 1 to 7 seconds after the capture; and the hour's summary `VEHICE_<date>-<hour>.txt`, one line per read with the camera's name, MAC and address. "Capture Plate Absence Vehicle" is on, so a vehicle without a readable plate should arrive too; what its files are called is still to be seen.
 - **Reader** (`vehicle_service/lpr.go`): watches the folder set by the "LPR Upload Folder" setting (`lpr_drop_dir`), pairs each crop with its scene photo by the capture time in the names (waiting up to 10 seconds for the other), and journals one `plate` entry per read: the plate, the capture time, both files and their arrival times, `missing` (`plate` or `scene`), and the camera and its lane (by its address from the summary). Other files are journaled as `lpr_file`. Files already there when it starts are not read. Plates don't feed the old correlator, and the files are left in place.
-- **Testbed and production:** the south entrance camera uploads to the testbed (the user's decision; nothing in production used its FTP output). Production's `vehicle_service` will need the uploads instead, or a second source such as the NVR.
+- **Testbed and production:** all four LPR cameras (both entrances and both exits) upload to the testbed since 2026-10-17 (`setup.sh` was given all four addresses) (the user's decision; nothing in production used its FTP output). Production's `vehicle_service` will need the uploads instead, or a second source such as the NVR.
 
 **The cameras' API** (looked at read-only, 2026-10-16): TVT firmware under Speco's name (firmware 5.1.1.0, API 1.7): XML over HTTP POST to `/<Command>` with Basic authentication, no HTTPS. Read-only commands used: `GetDeviceInfo`, `GetVehicleConfig`, `GetAlarmStatus`. **Never send `GetAlarmServerConfig`**: it blocked the testbed's address (the camera's ports 80 and 554) for a few minutes, twice, the second time with a valid login. Also found:
 - `GetAlarmStatus` gives only a true/false `vehicleAlarm`, held for 20 seconds after a read, with no plate, so polling can't replace the uploads.
