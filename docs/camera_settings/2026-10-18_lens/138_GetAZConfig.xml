@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<config version="1.7" xmlns="http://www.ipc.com/ver10">
+<types>
+<lensMode>
+<enum>manual</enum>
+</lensMode>
+<lensTime>
+<enum>1</enum>
+<enum>5</enum>
+<enum>10</enum>
+<enum>30</enum>
+<enum>all</enum>
+</lensTime>
+</types>
+<lensCon>
+<lensMode type="lensMode">manual</lensMode>
+<lensTime type="lensTime">1</lensTime>
+<autoFocusSwitch type="boolean">false</autoFocusSwitch>
+</lensCon>
+</config>
