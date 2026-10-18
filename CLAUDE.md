@@ -98,6 +98,18 @@ This is allowed as long as it can't affect production (see "Environment separati
 - **LPR camera:** Speco O4BLP2M, one on each entrance lane and one on each exit lane. Each is mounted on the gate post, pointing away from the gate, so it reads the rear plate about 20 ft past the gate, after the car has cleared it. A plate read on an entrance lane therefore means a vehicle got in.
 - **Overview camera:** each entrance lane also has an overview (context) camera that sees the vehicle as it passes the gate, and sees the arm.
 - Each entrance lane has its own complete set: DoorKing controller, loop, LPR camera and overview camera.
+- **Ordered for South Enter** (the user, 2026-10-18; not yet installed):
+  - **A beam sensor across the lane**, as the loop signal we can't get from the arm. It's wired to a Shelly as a dry contact, and the Shelly's address goes in the lane's loop sensor field, so `vehicle_service` handles it like a loop: beam broken means a vehicle is present.
+    - It's powered by the illuminator's 12 V 2 A supply.
+    - Placement: just past the arm, at about bumper height (20 to 24 in).
+    - It also breaks for a trailer behind a gap, a pedestrian or a bike.
+    - Check the Shelly Pro 1's input wiring first: its SW inputs sense its own supply voltage (mains or 24 V DC), not a dry contact. A Shelly Plus Uni (12 V, inputs made for dry contacts) is the alternative.
+  - **A Reolink RLC-810A** (8 MP, 4 mm lens, IR, RTSP, ONVIF, HTTP API) to count cars at the arm.
+    - Mounting: on the South Enter LPR camera's pole, pointed the other way, toward the gate. Mount it high and tilted down, and aim it across the lane at the arm, not along it, to avoid oncoming headlights and to see the gaps between close followers.
+    - The counter would read its H.264 second stream (about 640 x 360) at 5 to 10 frames a second.
+    - Turn off its cloud access (UID/P2P) and block it from the internet.
+  - **A 4-port PoE passthrough switch** at the pole, inserted in the LPR camera's Cat6 PoE cable. It powers both cameras from that one cable.
+  - **An 850 nm IR illuminator** on the other side of the lane from the LPR camera. Because its light reaches the car off the camera's axis, it lights the car without blowing out the plate ("Image settings and night reads" below). Aim it at the read spot about 20 ft past the gate, and keep it out of both cameras' views and the beam's receiver.
 - **Plate reads:** the LPR camera itself captures, for each read, the plate crop and a scene photo of the car (the `..._plate_<PLATE>.jpg` and `..._src.jpg` pairs) and uploads them by FTP ("Plate reads: FTP from the cameras" below). The overview camera is a separate camera the service can take its own snapshot from.
 - **NVR:** Speco N64NR (192.168.107.74), also on our LAN. It also receives the plate reads (a scrolling list in its web app, and a search); its API hasn't been looked at.
 
