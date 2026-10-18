@@ -116,3 +116,7 @@ Items 6, 9, 10 and 11 come down to one redesign: keep one in-progress event per 
   - Run it silently first (flags on the cards); turn the sound on once false alerts are rare. The monitor column, the sound and an acknowledge button are core's.
   - All four LPR cameras upload to the testbed since 2026-10-17.
   - Reads without a plate (`no_plate`) include vehicles that never came through the gate: the north entrance camera's first was a pickup passing on the cross street. Before such reads can raise alerts, they need filtering: from the study (how often, which cameras), then perhaps a smaller detection region or the direction setting ("further") in the camera, which is the user's decision.
+- [ ] **33. Match partial plate reads to households.** When plates are looked up against the vehicles in Access Control, an exact match isn't enough.
+  - **The case:** 2026-10-18 09:49:10, South Exit, a Ford Maverick. A hitch-mounted step covered the plate's lower-left corner, so the camera read `497Y3` for `?2497Y3`. The first digit can't be seen at all. No camera setting can fix it.
+  - **The rule:** accept a read that matches the end of a registered plate, and the middle if needed. Mark the match as partial on the monitor card and in `raw_details`. If more than one household matches, show them all, as for shared gate codes.
+  - A partial read still counts as one vehicle when counting vehicles against credentials.
