@@ -120,7 +120,15 @@ Items 6, 9, 10 and 11 come down to one redesign: keep one in-progress event per 
   - **The case:** 2026-10-18 09:49:10, South Exit, a Ford Maverick. A hitch-mounted step covered the plate's lower-left corner, so the camera read `497Y3` for `?2497Y3`. The first digit can't be seen at all. No camera setting can fix it.
   - **The rule:** accept a read that matches the end of a registered plate, and the middle if needed. Mark the match as partial on the monitor card and in `raw_details`. If more than one household matches, show them all, as for shared gate codes.
   - A partial read still counts as one vehicle when counting vehicles against credentials.
-- [ ] **34. Play the video of a vehicle's entry from its monitor card.** Requested 2026-10-18; what we eventually want isn't decided. Options, cheapest first:
+- [ ] **34. Play the video of a vehicle's entry from its monitor card.** Requested 2026-10-18; what we eventually want isn't decided.
+  - **First step: point staff to the NVR** (the user, 2026-10-18: for researching an access, the NVR's recording is best).
+    - Show on the card each of the lane's cameras (overview, keypad, LPR) with its NVR channel and the time, such as "NVR: South Enter overview, channel 5, 10:16:05", with a copy button.
+    - Link to the NVR's web app (http://192.168.107.74/#login).
+    - Needs an NVR channel per camera in the lane settings, and the card change in core.
+    - Check the NVR's clock against the server's once. If they differ, show the NVR's time. The Speco overview cameras show times an hour behind, because their daylight saving setting is off.
+    - Look for the NVR's documentation: its RTSP playback address and any way to link to a channel and time.
+    - Found 2026-10-18: CCTV Camera Pros publishes the API of TVT-made cameras and NVRs, the same XML API the LPR cameras use ([search by time](https://videos.cctvcamerapros.com/developer/docs/api-reference/playback/search-recordings-by-time), [authentication](https://videos.cctvcamerapros.com/developer/docs/getting-started/authentication/)). Playback: `rtsp://<host>:554/chID=0&date=2026-10-18&time=10:16:05&timelen=60&streamType=main&action=playback`, with `chID` counted from 0 (the failed tries used 1); the HTTP API uses Basic authentication; recordings are searched with `SearchByTime/<channel>`. Not yet tried on our NVR; its docs mention an API that may need turning on in the device.
+  - Options for playing video on the card itself, cheapest first:
   - **Frames already saved:** `vehicle_service` keeps one overview frame a second for each pass, for 3 days (`overview_frame_dir`). The lightbox could play the frames from shortly before to after the plate read, as a slideshow. Nothing new to capture.
   - **Short clips from the service:** keep a rolling minute or two of the overview camera's second stream (704 x 480, about 2 Mbps) in short segments, and keep the segments around each event. A few MB per event, deleted with the photos.
   - **Frigate's player,** if Frigate records the gate cameras (see the Frigate notes from 2026-10-18): it plays any time range from a link (`/vod/<camera>/start/<time>/end/<time>/index.m3u8`). Pass it through WordPress, like the photos, so browsers don't reach the alarm box.
