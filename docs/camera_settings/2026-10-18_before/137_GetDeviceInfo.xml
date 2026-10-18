@@ -1,0 +1,127 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<config version="1.7" xmlns="http://www.ipc.com/ver10">
+<types>
+<userType>
+<enum>administrator</enum>
+<enum>advance</enum>
+<enum>normal</enum>
+</userType>
+<upgradeProtocol>
+<enum>api</enum>
+<enum>binary</enum>
+</upgradeProtocol>
+<adminPasswdLevel>
+<enum>weak</enum>
+<enum>medium</enum>
+<enum>strong</enum>
+</adminPasswdLevel>
+<timeFormatModeType>
+<enum>12h</enum>
+<enum>24h</enum>
+</timeFormatModeType>
+</types>
+<deviceInfo>
+<deviceName type="string"><![CDATA[S Gate Exit LPR]]></deviceName>
+<userType type="userType">administrator</userType>
+<model type="string"><![CDATA[O4BLP2M]]></model>
+<updateType type="string"><![CDATA[1839]]></updateType>
+<brand type="string"><![CDATA[Speco]]></brand>
+<deviceDescription type="string"><![CDATA[S Gate Exit LPR]]></deviceDescription>
+<audioInCount type="uint32">1</audioInCount>
+<audioOutCount type="uint32">1</audioOutCount>
+<integratedPtz type="boolean">false</integratedPtz>
+<supportRS485Ptz type="boolean">false</supportRS485Ptz>
+<supportKeyBoardControl type="boolean">false</supportKeyBoardControl>
+<supportSDCard type="boolean">true</supportSDCard>
+<alarmInCount type="uint32">1</alarmInCount>
+<alarmOutCount type="uint32">1</alarmOutCount>
+<softwareVersion type="string"><![CDATA[5.1.1.0(58753)]]></softwareVersion>
+<softwareBuildDate type="string"><![CDATA[2024-07-05]]></softwareBuildDate>
+<hardwareVersion type="string"><![CDATA[1.5-1424346]]></hardwareVersion>
+<mac type="string"><![CDATA[5c:f2:07:5f:fd:be]]></mac>
+<onvifVer type="string"><![CDATA[23.12]]></onvifVer>
+<supportP2PService type="boolean">false</supportP2PService>
+<supportPea type="boolean">false</supportPea>
+<supportOsc type="boolean">false</supportOsc>
+<supportAvd type="boolean">true</supportAvd>
+<supportVfd type="boolean">false</supportVfd>
+<supportVfdMatch type="boolean">false</supportVfdMatch>
+<supportVfdDetect type="boolean">false</supportVfdDetect>
+<supportCpc type="boolean">false</supportCpc>
+<supportCdd type="boolean">false</supportCdd>
+<supportIpd type="boolean">false</supportIpd>
+<supportVehice type="boolean">true</supportVehice>
+<supportAoiEntry type="boolean">false</supportAoiEntry>
+<supportAoiLeave type="boolean">false</supportAoiLeave>
+<supportPassLineCount type="boolean">false</supportPassLineCount>
+<supportTraffic type="boolean">false</supportTraffic>
+<supportHeatMap type="boolean">false</supportHeatMap>
+<supportAZ type="boolean">true</supportAZ>
+<supportROI type="boolean">true</supportROI>
+<supportWiper type="boolean">false</supportWiper>
+<upgradeProtocol type="upgradeProtocol">binary</upgradeProtocol>
+<supportPPPoE type="boolean">true</supportPPPoE>
+<supportPrivateZone type="boolean">true</supportPrivateZone>
+<supportSpvmn type="boolean">false</supportSpvmn>
+<supportGAT1400 type="boolean">false</supportGAT1400>
+<SupportHttpPost type="boolean">true</SupportHttpPost>
+<supportCOC type="boolean">false</supportCOC>
+<supportInfraredLamp type="boolean">false</supportInfraredLamp>
+<supportShowModel type="boolean">false</supportShowModel>
+<dateFormat type="string"><![CDATA[yyyy-MM-dd]]></dateFormat>
+<supportMotionSens type="boolean">false</supportMotionSens>
+<supportWatermark type="boolean">true</supportWatermark>
+<supportFTPRecord type="boolean">false</supportFTPRecord>
+<supportFtp type="boolean">true</supportFtp>
+<supportSnmp type="boolean">true</supportSnmp>
+<supportRtmp type="boolean">true</supportRtmp>
+<supportAnonymousLogin type="boolean">false</supportAnonymousLogin>
+<supportAPILongPolling type="boolean">true</supportAPILongPolling>
+<supportNewWebStorage type="boolean">true</supportNewWebStorage>
+<sn type="string"><![CDATA[]]></sn>
+<supportHttpUpgrade type="boolean">false</supportHttpUpgrade>
+<chlMaxCount type="uint32">1</chlMaxCount>
+<apiVersion type="string"><![CDATA[1.7]]></apiVersion>
+<supportMultiOSD type="boolean">true</supportMultiOSD>
+<SupportPresetResponse type="boolean">false</SupportPresetResponse>
+<supportHttps type="boolean">true</supportHttps>
+<supportAlarmServer type="boolean">true</supportAlarmServer>
+<SupportRU32P2pServer type="boolean">false</SupportRU32P2pServer>
+<SupportRU32SpecialBitRateLists type="boolean">false</SupportRU32SpecialBitRateLists>
+<supportCenterServer type="boolean">true</supportCenterServer>
+<supportUsbDisk type="boolean">false</supportUsbDisk>
+<vehicleVersion type="string"><![CDATA[1.1.30.1039]]></vehicleVersion>
+<supportAudioAlarmOut type="boolean">false</supportAudioAlarmOut>
+<supportWhiteLightAlarmOut type="boolean">false</supportWhiteLightAlarmOut>
+<MaxFaceDatabaseNumber type="uint32">10000</MaxFaceDatabaseNumber>
+<supportMosaic type="boolean">false</supportMosaic>
+<SupportUartRunLog type="boolean">false</SupportUartRunLog>
+<deviceActivated type="boolean">true</deviceActivated>
+<customerAdminPasswdLevel type="adminPasswdLevel">weak</customerAdminPasswdLevel>
+<customerAdministrator type="string"><![CDATA[admin]]></customerAdministrator>
+<supportSDCardDelete type="boolean">false</supportSDCardDelete>
+<supportLocalUpgrate type="boolean">true</supportLocalUpgrate>
+<supportSecurityQuestion type="boolean">false</supportSecurityQuestion>
+<SupportFtpTimingSnap type="boolean">false</SupportFtpTimingSnap>
+<TW01AntiflickerLinkage2ExposureMode type="boolean">false</TW01AntiflickerLinkage2ExposureMode>
+<UUID type="string" maxLen="63"><![CDATA[urn:uuid:0329924a-8f78-4e1b-87ae-5ffdbedca9d5]]></UUID>
+<timeFormatMode type="timeFormatModeType">12h</timeFormatMode>
+<kernelVersion type="string"><![CDATA[00007915]]></kernelVersion>
+<ubootVersion type="string"><![CDATA[10687]]></ubootVersion>
+<rootfsVersion type="string"><![CDATA[11469]]></rootfsVersion>
+<sdkVersion type="string"><![CDATA[12841]]></sdkVersion>
+<afVersion type="string"><![CDATA[27070]]></afVersion>
+<imageVersion type="string"><![CDATA[208.413.1012]]></imageVersion>
+<SupportPasswdLevelMode type="boolean">true</SupportPasswdLevelMode>
+<SupportPlateRs485 type="boolean">true</SupportPlateRs485>
+<SupportPlateRs232 type="boolean">false</SupportPlateRs232>
+<devQrCode type="string"><![CDATA[]]></devQrCode>
+<SupportGdcChangeNeedReboot type="boolean">false</SupportGdcChangeNeedReboot>
+<SupportHideGainMode type="boolean">false</SupportHideGainMode>
+<SupportEchoCancellation type="boolean">true</SupportEchoCancellation>
+<SupportRedBlueLightCtrl type="boolean">false</SupportRedBlueLightCtrl>
+<SupportAlarmAudioOutCtrl type="boolean">false</SupportAlarmAudioOutCtrl>
+<supportWifi type="boolean">false</supportWifi>
+<supportExtLpInfo type="boolean">true</supportExtLpInfo>
+</deviceInfo>
+</config>

@@ -1,0 +1,264 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<config version="1.7" xmlns="http://www.ipc.com/ver10">
+<types>
+<detectModeType>
+<enum>auto</enum>
+<enum>fixedInterval</enum>
+</detectModeType>
+<detectAlarmModeType>
+<enum>allAlarm</enum>
+<enum>noLicensePlate</enum>
+</detectAlarmModeType>
+<continentType>
+<enum>Asia</enum>
+<enum>Europe</enum>
+<enum>NorthAmerica</enum>
+<enum>SouthAmerica</enum>
+<enum>Africa</enum>
+<enum>Oceania</enum>
+</continentType>
+<plateAreaType>
+<enum continent="Europe">Italy</enum>
+<enum continent="Europe">Hungary</enum>
+<enum continent="Europe">Ukraine</enum>
+<enum continent="Europe">Belgium</enum>
+<enum continent="Europe">Bulgaria</enum>
+<enum continent="Europe">Croatia</enum>
+<enum continent="Europe">Germany</enum>
+<enum continent="Europe">Britain</enum>
+<enum continent="Europe">Greece</enum>
+<enum continent="Europe">Romania</enum>
+<enum continent="Europe">Spain</enum>
+<enum continent="Europe">Serbia</enum>
+<enum continent="Europe">France</enum>
+<enum continent="Europe">Russia</enum>
+<enum continent="Europe">Poland</enum>
+<enum continent="Europe">Europe-Other</enum>
+<enum continent="Asia">India</enum>
+<enum continent="Asia">Indonesia</enum>
+<enum continent="Asia">TheUnitedArabEmirates</enum>
+<enum continent="Asia">Vietnam</enum>
+<enum continent="Asia">Turkey</enum>
+<enum continent="Asia">Uzbekistan</enum>
+<enum continent="Asia">Thailand</enum>
+<enum continent="Asia">ChineseMainland</enum>
+<enum continent="Asia">Hong Kong</enum>
+<enum continent="Asia">Taiwan</enum>
+<enum continent="Asia">Israel</enum>
+<enum continent="Asia">Iran</enum>
+<enum continent="Asia">Malaysia</enum>
+<enum continent="Asia">Iraq</enum>
+<enum continent="Asia">Egypt</enum>
+<enum continent="Asia">Mongolia</enum>
+<enum continent="Asia">Palestinian</enum>
+<enum continent="Asia">Korea</enum>
+<enum continent="Asia">Asia-Other</enum>
+<enum continent="Oceania">Australia</enum>
+<enum continent="Oceania">NewZealand</enum>
+<enum continent="Oceania">Oceania-Other</enum>
+<enum continent="NorthAmerica">Canada</enum>
+<enum continent="NorthAmerica">U.S.A</enum>
+<enum continent="NorthAmerica">NorthAmerica-Other</enum>
+<enum continent="SouthAmerica">Brazil</enum>
+<enum continent="SouthAmerica">SouthAmerica-Other</enum>
+<enum continent="Africa">SouthAfrica</enum>
+<enum continent="Africa">Mauritius</enum>
+<enum continent="Africa">Africa-Other</enum>
+</plateAreaType>
+<alarmListType>
+<enum>blackList</enum>
+<enum>whiteList</enum>
+<enum>strangerList</enum>
+</alarmListType>
+<directionType>
+<enum>noLimit</enum>
+<enum>approach</enum>
+<enum>further</enum>
+</directionType>
+<alarmModeType>
+<enum>plateOnly</enum>
+<enum>plateAndCard</enum>
+</alarmModeType>
+</types>
+<vehicle>
+<switch type="boolean">true</switch>
+<plateSencitivity type="uint8">49</plateSencitivity>
+<vehicleDirection type="directionType">noLimit</vehicleDirection>
+<capturePlateAbsenceVehicle type="boolean">true</capturePlateAbsenceVehicle>
+<plateSupportArea type="plateAreaType">U.S.A</plateSupportArea>
+<faultTolerance type="uint8">0</faultTolerance>
+<saveTargetPicture type="boolean">false</saveTargetPicture>
+<saveSourcePicture type="boolean">false</saveSourcePicture>
+<dedupMode>
+<switch type="boolean">false</switch>
+<intervalTime type="uint32" default="5">5</intervalTime>
+</dedupMode>
+<regionInfo type="list" maxCount="1" count="1">
+<item>
+<X1 type="uint32">375</X1>
+<Y1 type="uint32">700</Y1>
+<X2 type="uint32">8375</X2>
+<Y2 type="uint32">8800</Y2>
+</item>
+</regionInfo>
+<plateSize type="list" maxCount="1" count="1">
+<item>
+<MinWidth type="int32" min="100" max="5000" default="300">600</MinWidth>
+<MinHeight type="int32" min="100" max="5000" default="300">600</MinHeight>
+<MaxWidth type="int32" min="100" max="5000" default="3000">3000</MaxWidth>
+<MaxHeight type="int32" min="100" max="5000" default="3000">3000</MaxHeight>
+</item>
+</plateSize>
+<maskArea type="list" count="4">
+<item>
+<point type="list" maxCount="8" count="0">
+</point>
+</item>
+<item>
+<point type="list" maxCount="8" count="0">
+</point>
+</item>
+<item>
+<point type="list" maxCount="8" count="0">
+</point>
+</item>
+<item>
+<point type="list" maxCount="8" count="0">
+</point>
+</item>
+</maskArea>
+<faultToleranceList type="list" count="0">
+</faultToleranceList>
+<plateExposure>
+<switch type="boolean">true</switch>
+<exposureValue type="uint32" min="1" max="15" default="8">8</exposureValue>
+</plateExposure>
+<plateMatch>
+<alarmMode type="alarmModeType">plateOnly</alarmMode>
+<item>
+<alarmList type="alarmListType">strangerList</alarmList>
+<triggerAlarmOut>
+<Io type="list" maxCount="8" count="1">
+<item>
+<alarmId type="uint32">0</alarmId>
+<switch type="boolean">false</switch>
+</item>
+</Io>
+</triggerAlarmOut>
+</item>
+<item>
+<alarmList type="alarmListType">whiteList</alarmList>
+<triggerAlarmOut>
+<Io type="list" maxCount="8" count="1">
+<item>
+<alarmId type="uint32">0</alarmId>
+<switch type="boolean">false</switch>
+</item>
+</Io>
+</triggerAlarmOut>
+</item>
+<item>
+<alarmList type="alarmListType">blackList</alarmList>
+<triggerAlarmOut>
+<Io type="list" maxCount="8" count="1">
+<item>
+<alarmId type="uint32">0</alarmId>
+<switch type="boolean">false</switch>
+</item>
+</Io>
+</triggerAlarmOut>
+</item>
+<triggerAlarmOutV2>
+<whiteAlarmOut>
+<wiegand>
+<switch type="boolean">false</switch>
+<HID type="uint32">0</HID>
+</wiegand>
+<Io type="list" maxCount="8" count="1">
+<item>
+<alarmId type="uint32">0</alarmId>
+<switch type="boolean">false</switch>
+</item>
+</Io>
+</whiteAlarmOut>
+<blackAlarmOut>
+<wiegand>
+<switch type="boolean">false</switch>
+<HID type="uint32">0</HID>
+</wiegand>
+<Io type="list" maxCount="8" count="1">
+<item>
+<alarmId type="uint32">0</alarmId>
+<switch type="boolean">false</switch>
+</item>
+</Io>
+</blackAlarmOut>
+<temporaryAlarmOut>
+<wiegand>
+<switch type="boolean">false</switch>
+<HID type="uint32">0</HID>
+</wiegand>
+<Io type="list" maxCount="8" count="1">
+<item>
+<alarmId type="uint32">0</alarmId>
+<switch type="boolean">false</switch>
+</item>
+</Io>
+</temporaryAlarmOut>
+<strangerAlarmOut>
+<wiegand>
+<switch type="boolean">false</switch>
+<HID type="uint32">0</HID>
+</wiegand>
+<Io type="list" maxCount="8" count="1">
+<item>
+<alarmId type="uint32">0</alarmId>
+<switch type="boolean">false</switch>
+</item>
+</Io>
+</strangerAlarmOut>
+<noPlateAlarmOut>
+<wiegand>
+<switch type="boolean">false</switch>
+<HID type="uint32">0</HID>
+</wiegand>
+<Io type="list" maxCount="8" count="1">
+<item>
+<alarmId type="uint32">0</alarmId>
+<switch type="boolean">false</switch>
+</item>
+</Io>
+</noPlateAlarmOut>
+</triggerAlarmOutV2>
+</plateMatch>
+<triggerConfig>
+<alarmHoldTime type="uint32">20</alarmHoldTime>
+<sdSnapSwitch type="boolean">false</sdSnapSwitch>
+<sdRecSwitch type="boolean">false</sdRecSwitch>
+<triggerAlarmOut>
+<alarmOutList type="list" maxCount="1" count="1">
+<item>
+<alarmOutId type="uint32">0</alarmOutId>
+<alarmSwitch type="boolean">false</alarmSwitch>
+</item>
+</alarmOutList>
+</triggerAlarmOut>
+<triggerMail>
+<switch type="boolean">false</switch>
+<subject type="string" maxLen="63"><![CDATA[]]></subject>
+<content type="string" maxLen="255"><![CDATA[]]></content>
+<recvList type="list" maxCount="5" count="0">
+</recvList>
+</triggerMail>
+<triggerFtp>
+<switch type="boolean">true</switch>
+<ftpServerList type="list" maxCount="1" count="1">
+<item>
+<ftpId type="uint32">1</ftpId>
+<sendPic type="boolean">true</sendPic>
+</item>
+</ftpServerList>
+</triggerFtp>
+</triggerConfig>
+</vehicle>
+</config>

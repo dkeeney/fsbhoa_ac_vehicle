@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<config version="1.7" xmlns="http://www.ipc.com/ver10">
+<types>
+<progType>
+<enum>normal</enum>
+<enum>time</enum>
+<enum>auto</enum>
+</progType>
+</types>
+<program type="progType">auto</program>
+<dayTime type="string"><![CDATA[00:00]]></dayTime>
+<nightTime type="string"><![CDATA[23:59]]></nightTime>
+</config>
