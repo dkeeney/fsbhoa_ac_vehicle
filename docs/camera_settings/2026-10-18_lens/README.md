@@ -12,3 +12,7 @@ So the view itself is the record:
   the top and left edges: (0,0)-(8375,8800) in 1/10000 of the picture, minimum plate size 300.
   Before the user's edit in the web page that day: (375,700)-(8375,8800), minimum plate size 600
   (`../2026-10-18_before/138_GetVehicleConfig.xml`).
+
+## South Enter Reolink (192.168.107.141), 2026-10-19
+
+`141_reolink_view.jpg`: the final aim at 16:00, looking south from the LPR pole through the arch to the keypad island, with the arm (down) across the lower third. Earlier tries: about 15:41 (arm on the bottom edge), 15:57 (too far down, keypad island at the top edge), 15:58 (higher; the raised arm showed on the left edge).
