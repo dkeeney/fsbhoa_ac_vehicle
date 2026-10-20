@@ -225,6 +225,7 @@ func main() {
 	// Motion in the overview and keypad cameras' regions, from their snapshots: journaled,
 	// with the frames of each pass kept. Applied without a restart.
 	motion := NewMotion(cfg.OverviewFrameDir, cfg.OverviewFrameDays, journal, gsm.debugf)
+	motion.SetFrameSource(overviewPhotos) // the overview cameras' frames are fetched once, for both
 	go motion.Run()
 
 	// The gates' devices are the only addresses (besides this machine) that may call the

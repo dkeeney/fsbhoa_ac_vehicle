@@ -36,6 +36,7 @@ type Motion struct {
 	debugf   func(string, ...interface{})
 	gates    atomic.Pointer[Gates]
 	watches  map[string]*cameraWatch // by camera IP
+	frames   *OverviewPhotos         // frames already being fetched (lanes' overview cameras); nil: none
 }
 
 // MotionRegion is one area of one camera's picture, in percent of its width and height.
@@ -74,6 +75,11 @@ const (
 func NewMotion(dir string, keepDays int, journal *Journal, debugf func(string, ...interface{})) *Motion {
 	return &Motion{dir: dir, keepDays: keepDays, journal: journal, debugf: debugf, watches: map[string]*cameraWatch{}}
 }
+
+// SetFrameSource lets a camera whose frames OverviewPhotos already fetches (a lane's overview
+// camera, such as the Reolink, which needs its login) be watched from those frames, instead
+// of being asked for a second snapshot. Call before SetRegions.
+func (m *Motion) SetFrameSource(o *OverviewPhotos) { m.frames = o }
 
 // SetGates gives the lanes, so each pass is journaled with its camera's lane.
 func (m *Motion) SetGates(g *Gates) { m.gates.Store(g) }
@@ -132,7 +138,8 @@ func (m *Motion) purge() {
 	}
 }
 
-// cameraWatch fetches one camera's snapshot every second and handles each frame.
+// cameraWatch handles one camera's frames, one a second: its own snapshot, or the newest
+// frame from the frame source when that already fetches the camera.
 type cameraWatch struct {
 	m       *Motion
 	ip      string
@@ -143,6 +150,7 @@ type cameraWatch struct {
 	pass    *motionPass   // nil between passes
 	failing bool
 	lowDisk bool
+	lastAt  time.Time // the last frame taken from the frame source
 }
 
 type motionFrame struct {
@@ -175,7 +183,20 @@ func (w *cameraWatch) run() {
 		case <-ticker.C:
 		}
 		t := time.Now()
-		data, err := fetchSnapshot(client, url)
+		var data []byte
+		var err error
+		if f, watched := w.m.frames.Latest(w.ip); watched {
+			switch {
+			case f.data == nil || t.Sub(f.at) > snapshotTimeout:
+				err = fmt.Errorf("no frame in the last %v from the overview photos", snapshotTimeout)
+			case !f.at.After(w.lastAt):
+				continue // no new frame since the last tick
+			default:
+				t, data, w.lastAt = f.at, f.data, f.at
+			}
+		} else {
+			data, err = fetchSnapshot(client, url)
+		}
 		if err != nil {
 			if !w.failing {
 				log.Printf("[MOTION] %s: snapshot failed: %v", w.ip, err)

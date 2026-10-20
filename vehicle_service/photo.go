@@ -46,8 +46,8 @@ const (
 	// photos arrive 1 to 7 s after the capture, and wait up to 10 s for each other).
 	overviewPhotoKeep     = 30 * time.Second
 	overviewPhotoInterval = 500 * time.Millisecond
-	overviewPhotoRetry    = 30 * time.Second // after a failure, before trying the camera again
-	overviewPhotoMaxWidth = 1000             // larger snapshots (Speco, 1920 x 1080) are halved before sending
+	overviewPhotoRetry    = 2 * time.Second // after a failure, before trying again: a single slow answer (seen 2026-10-20) mustn't leave a read without its photo
+	overviewPhotoMaxWidth = 1000            // larger snapshots (Speco, 1920 x 1080) are halved before sending
 	overviewPhotoQuality  = 80
 
 	// The cameras' passwords file (CLAUDE.md, "Plate reads: FTP from the cameras"), owned by
@@ -132,6 +132,26 @@ func (o *OverviewPhotos) ForRead(lane, direction string, capture time.Time) ([]b
 		}
 	}
 	return data, f.at
+}
+
+// Latest returns the newest frame from a camera, and whether the camera is watched at all.
+// Safe on a nil OverviewPhotos (nothing is watched).
+func (o *OverviewPhotos) Latest(ip string) (photoFrame, bool) {
+	if o == nil {
+		return photoFrame{}, false
+	}
+	o.mu.Lock()
+	w := o.watches[ip]
+	o.mu.Unlock()
+	if w == nil {
+		return photoFrame{}, false
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if len(w.frames) == 0 {
+		return photoFrame{}, true
+	}
+	return w.frames[len(w.frames)-1], true
 }
 
 // nearest returns the kept frame closest to t, if one is within overviewPhotoMaxGap.

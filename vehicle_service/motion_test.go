@@ -174,3 +174,53 @@ func TestBrightRegion(t *testing.T) {
 		t.Error("a bright region counted as motion")
 	}
 }
+
+// A camera OverviewPhotos already fetches (the Reolink) is watched from its frames: the
+// region's state comes from them, and the camera is never asked for /snapshot.JPG.
+func TestMotionFromFrameSource(t *testing.T) {
+	dir := t.TempDir()
+	journal, err := NewJournal(filepath.Join(dir, "journal"), 30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	photos := NewOverviewPhotos()
+	src := &photoWatch{ip: "192.0.2.41"}
+	photos.watches["192.0.2.41"] = src
+	m := NewMotion(filepath.Join(dir, "frames"), 3, journal, t.Logf)
+	m.SetFrameSource(photos)
+
+	// A uniform bright frame: the whole picture is "arm"
+	frame := testFrame(t, 230, -1)
+	stop := make(chan struct{})
+	go func() {
+		for {
+			src.add(photoFrame{at: time.Now(), data: frame})
+			select {
+			case <-stop:
+				return
+			case <-time.After(400 * time.Millisecond):
+			}
+		}
+	}()
+	m.SetRegions([]MotionRegion{{Camera: "192.0.2.41", Name: "arm-down", Kind: "bright", Left: 30, Top: 80, Right: 40, Bottom: 100}})
+	defer close(stop)
+	defer m.SetRegions(nil)
+
+	path := filepath.Join(dir, "journal", "journal-"+time.Now().Format("2006-01-02")+".jsonl")
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if data, err := os.ReadFile(path); err == nil && bytes.Contains(data, []byte(`"region_state"`)) {
+			if !bytes.Contains(data, []byte(`"arm-down"`)) || !bytes.Contains(data, []byte(`"on":true`)) {
+				t.Fatalf("journal: %s", data)
+			}
+			if bytes.Contains(data, []byte("camera_failed")) {
+				t.Fatalf("the camera was fetched itself: %s", data)
+			}
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("no region_state from the frame source's frames")
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
