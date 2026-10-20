@@ -36,6 +36,8 @@ type ServiceConfig struct {
 	MotionRegions     []MotionRegion `json:"motion_regions"`
 	OverviewFrameDir  string         `json:"overview_frame_dir"`  // frames kept for each pass of motion
 	OverviewFrameDays int            `json:"overview_frame_days"` // kept this many days
+	// Car counting from the overview cameras' frames (count.go). No zones: none.
+	CountZones []CountZone `json:"count_zones"`
 
 	// Local runtime fields (not in JSON, populated via flags/defaults)
 	ConfigPath     string        `json:"-"`

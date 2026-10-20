@@ -74,6 +74,7 @@ class FSBHOA_Vehicle_Settings {
 			'gates'                => array(),
 			'exit_lanes'           => array(),
 			'motion_regions'       => array(),
+			'count_zones'          => array(),
 		);
 	}
 
@@ -185,6 +186,15 @@ class FSBHOA_Vehicle_Settings {
 			array( 'label_for' => 'fsbhoa_vehicle_motion_regions' )
 		);
 
+		add_settings_field(
+			'count_zones',
+			__( 'Car Count Zones', 'fsbhoa-ac-vehicle' ),
+			array( $this, 'render_count_zones_field' ),
+			self::PAGE_SLUG,
+			'fsbhoa_vehicle_sources_section',
+			array( 'label_for' => 'fsbhoa_vehicle_count_zones' )
+		);
+
 		add_settings_section(
 			'fsbhoa_vehicle_policy_section',
 			__( 'Correlation & Logging', 'fsbhoa-ac-vehicle' ),
@@ -263,6 +273,7 @@ class FSBHOA_Vehicle_Settings {
 		$sanitized['gates']       = $this->sanitize_lanes( $input['gates'] ?? array(), 'gates', $ips );
 		$sanitized['exit_lanes']  = $this->sanitize_lanes( $input['exit_lanes'] ?? array(), 'exit_lanes', $ips );
 		$sanitized['motion_regions'] = $this->sanitize_motion_regions( $input['motion_regions'] ?? '', $sanitized );
+		$sanitized['count_zones']    = $this->sanitize_count_zones( $input['count_zones'] ?? '', $sanitized );
 
         if ( ! $this->write_config_from_array( $sanitized ) ) {
 			add_settings_error(
@@ -448,6 +459,111 @@ class FSBHOA_Vehicle_Settings {
 		$lines = array();
 		foreach ( (array) $regions as $r ) {
 			$lines[] = trim( implode( ' ', array( $r['camera'], $r['name'], $r['left'], $r['top'], $r['right'], $r['bottom'], $r['kind'] ?? '' ) ) );
+		}
+		return implode( "\n", $lines );
+	}
+
+	/**
+	 * Parses the Car Count Zones text, one zone a line:
+	 * "<camera IP> approach|beyond <x1> <y1> <x2> <y2> <x3> <y3> ...", a polygon of 3 to 12
+	 * corners in percent of the picture. A camera counts cars only with both zones. A line
+	 * that doesn't fit is dropped with a message.
+	 *
+	 * @return array[] camera, zone, points (array of array( x, y ))
+	 */
+	private function sanitize_count_zones( $text, $options ) {
+		if ( is_array( $text ) ) { // already parsed (an option saved before)
+			$text = self::count_zones_text( $text );
+		}
+		// Only the overview cameras: vehicle_service counts from the frames it keeps for their photos
+		$cameras = array();
+		foreach ( array( 'gates', 'exit_lanes' ) as $table ) {
+			foreach ( (array) ( $options[ $table ] ?? array() ) as $lane ) {
+				if ( ! empty( $lane['overview_ip'] ) ) {
+					$cameras[] = $lane['overview_ip'];
+				}
+			}
+		}
+		$zones = array();
+		$seen  = array();
+		foreach ( preg_split( '/\r\n|\r|\n/', (string) $text ) as $line ) {
+			$line = trim( sanitize_text_field( $line ) );
+			if ( '' === $line || '#' === $line[0] ) {
+				continue;
+			}
+			$parts  = preg_split( '/\s+/', $line );
+			$coords = array_slice( $parts, 2 );
+			$error  = '';
+			if ( count( $parts ) < 2 || ! in_array( $parts[1], array( 'approach', 'beyond' ), true ) ) {
+				$error = __( 'it needs a camera address, then "approach" or "beyond", then the corners', 'fsbhoa-ac-vehicle' );
+			} elseif ( ! in_array( $parts[0], $cameras, true ) ) {
+				$error = __( 'the camera is not a lane\'s overview camera', 'fsbhoa-ac-vehicle' );
+			} elseif ( isset( $seen[ $parts[0] . ' ' . $parts[1] ] ) ) {
+				$error = __( 'the camera already has that zone', 'fsbhoa-ac-vehicle' );
+			} elseif ( count( $coords ) % 2 || count( $coords ) < 6 || count( $coords ) > 24 ) {
+				$error = __( 'a zone needs 3 to 12 corners, each an x and a y', 'fsbhoa-ac-vehicle' );
+			} else {
+				foreach ( $coords as $c ) {
+					if ( ! is_numeric( $c ) || $c < 0 || $c > 100 ) {
+						$error = __( 'the corners must be numbers from 0 to 100', 'fsbhoa-ac-vehicle' );
+					}
+				}
+			}
+			if ( '' !== $error ) {
+				add_settings_error(
+					self::OPTION_NAME,
+					'fsbhoa_vehicle_count_zone',
+					sprintf(
+						/* translators: 1: the line entered, 2: what is wrong with it */
+						__( 'Car count zone "%1$s" was not saved: %2$s.', 'fsbhoa-ac-vehicle' ),
+						$line,
+						$error
+					)
+				);
+				continue;
+			}
+			$seen[ $parts[0] . ' ' . $parts[1] ] = true;
+			$points = array();
+			for ( $i = 0; $i < count( $coords ); $i += 2 ) {
+				$points[] = array( (float) $coords[ $i ], (float) $coords[ $i + 1 ] );
+			}
+			$zones[] = array(
+				'camera' => $parts[0],
+				'zone'   => $parts[1],
+				'points' => $points,
+			);
+		}
+		foreach ( $zones as $z ) {
+			$other = 'approach' === $z['zone'] ? 'beyond' : 'approach';
+			if ( ! isset( $seen[ $z['camera'] . ' ' . $other ] ) ) {
+				add_settings_error(
+					self::OPTION_NAME,
+					'fsbhoa_vehicle_count_zone_pair',
+					sprintf(
+						/* translators: 1: camera address, 2: the missing zone */
+						__( 'Camera %1$s has no "%2$s" zone, so it won\'t count cars until it has one.', 'fsbhoa-ac-vehicle' ),
+						$z['camera'],
+						$other
+					),
+					'warning'
+				);
+			}
+		}
+		return $zones;
+	}
+
+	/**
+	 * The saved zones as the field's text, one a line.
+	 */
+	private static function count_zones_text( $zones ) {
+		$lines = array();
+		foreach ( (array) $zones as $z ) {
+			$words = array( $z['camera'], $z['zone'] );
+			foreach ( (array) $z['points'] as $p ) {
+				$words[] = $p[0];
+				$words[] = $p[1];
+			}
+			$lines[] = implode( ' ', $words );
 		}
 		return implode( "\n", $lines );
 	}
@@ -718,6 +834,20 @@ class FSBHOA_Vehicle_Settings {
 				 placeholder="192.168.107.131 gate 54 20 82 50"><?php echo esc_textarea( self::motion_regions_text( $options['motion_regions'] ) ); ?></textarea>
 		<p class="description">
 			<?php esc_html_e( 'Areas of the overview and keypad cameras\' pictures that vehicle_service watches for motion, one a line: the camera\'s address (a lane\'s overview or keypad camera), a name (gate, arm, keypad), then the left, top, right and bottom edges in percent of the picture\'s width and height. A region ending with "bright" isn\'t watched for motion: it is on while enough of it is bright (the white arm against the hedge when it is up), and each change is recorded in the journal. It compares the camera\'s snapshot once a second; each pass of motion is recorded in the journal, and its frames are kept, half size, for 3 days in /var/lib/fsbhoa/overview_frames. Applied without a restart.', 'fsbhoa-ac-vehicle' ); ?>
+		</p>
+		<?php
+	}
+
+	public function render_count_zones_field() {
+		$options = self::get_options();
+		?>
+		<textarea id="fsbhoa_vehicle_count_zones"
+				 name="<?php echo esc_attr( self::OPTION_NAME . '[count_zones]' ); ?>"
+				 rows="3"
+				 class="large-text code"
+				 placeholder="192.168.107.141 approach 18 100 30 62 42 45 70 45 66 63 40 100"><?php echo esc_textarea( self::count_zones_text( $options['count_zones'] ?? array() ) ); ?></textarea>
+		<p class="description">
+			<?php esc_html_e( 'Two areas of a lane\'s overview camera that vehicle_service counts cars with, one a line: the camera\'s address, "approach" (the lane just before the arm) or "beyond" (past the arm, where a car has come in), then the corners of the area, each an x and a y in percent of the picture\'s width and height (3 to 12 corners). A car is counted when "beyond" fills after "approach" did; a car that leaves "approach" without reaching "beyond" backed out. Each is recorded in the journal. It uses the frames kept for the overview photos, twice a second. Applied without a restart.', 'fsbhoa-ac-vehicle' ); ?>
 		</p>
 		<?php
 	}
@@ -993,6 +1123,7 @@ class FSBHOA_Vehicle_Settings {
 			'gates'                => array_values( is_array( $options['gates'] ?? null ) ? $options['gates'] : array() ),
 			'exit_lanes'           => array_values( is_array( $options['exit_lanes'] ?? null ) ? $options['exit_lanes'] : array() ),
 			'motion_regions'       => array_values( is_array( $options['motion_regions'] ?? null ) ? $options['motion_regions'] : array() ),
+			'count_zones'          => array_values( is_array( $options['count_zones'] ?? null ) ? $options['count_zones'] : array() ),
 		);
 
 		$json_data = json_encode($config, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES );

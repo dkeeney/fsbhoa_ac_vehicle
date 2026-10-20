@@ -219,6 +219,9 @@ func main() {
 	// Each lane's overview camera, kept a few seconds back, for a photo of the car with each read
 	overviewPhotos := NewOverviewPhotos()
 	plateEvents.SetPhotos(overviewPhotos)
+	// Cars counted from those frames, journaled. Applied without a restart.
+	carCounter := NewCarCounter(journal, gsm.debugf)
+	overviewPhotos.SetFrameHandler(carCounter.HandleFrame)
 	lprDrop.SetEvents(plateEvents)
 	go lprDrop.Run()
 
@@ -241,12 +244,14 @@ func main() {
 		lprDrop.SetGates(g)
 		motion.SetGates(g)
 		overviewPhotos.SetGates(g)
+		carCounter.SetGates(g)
 		if g.Count() == 0 {
 			log.Printf("[CONFIG] WARNING: no lanes configured; DoorKing records and loop changes aren't matched to a lane, and only this machine may call the webhooks")
 		}
 	}
 	setGates(cfg)
 	motion.SetRegions(cfg.MotionRegions)
+	carCounter.SetZones(cfg.CountZones)
 
 	// Saving the vehicle settings rewrites the config file. Apply the lanes and the
 	// DoorKing-only and plate read events settings without a restart.
@@ -255,6 +260,7 @@ func main() {
 		dkEvents.SetEnabled(next.DoorKingEvents)
 		plateEvents.SetEnabled(next.PlateEvents)
 		motion.SetRegions(next.MotionRegions)
+		carCounter.SetZones(next.CountZones)
 		log.Printf("[CONFIG] Reloaded: %d entrance lanes, %d exit lanes", len(next.Gates), len(next.ExitLanes))
 		if changed := restartNeeded(cfg, next); len(changed) > 0 {
 			log.Printf("[CONFIG] Changed settings that need a restart of vehicle_service to apply: %v", changed)

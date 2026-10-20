@@ -33,6 +33,7 @@ type OverviewPhotos struct {
 	watches   map[string]*photoWatch // by camera IP
 	lanes     atomic.Pointer[map[string]string]
 	loginFile string
+	onFrame   func(ip string, f photoFrame) // each new frame, such as for counting cars; nil: none
 }
 
 const (
@@ -75,6 +76,10 @@ func NewOverviewPhotos() *OverviewPhotos {
 	}
 	return o
 }
+
+// SetFrameHandler sets a function given each new frame, on the camera's own goroutine. Call
+// before SetGates.
+func (o *OverviewPhotos) SetFrameHandler(h func(ip string, f photoFrame)) { o.onFrame = h }
 
 // SetGates watches each lane's overview camera, and stops watching a camera no lane has.
 // Applied without a restart.
@@ -223,7 +228,11 @@ func (o *OverviewPhotos) run(w *photoWatch) {
 				log.Printf("[PHOTO] %s: snapshots working again", w.ip)
 				failing = false
 			}
-			w.add(photoFrame{at: start.Add(end.Sub(start) / 2), data: data})
+			f := photoFrame{at: start.Add(end.Sub(start) / 2), data: data}
+			w.add(f)
+			if o.onFrame != nil {
+				o.onFrame(w.ip, f)
+			}
 		}
 		if wait > 0 {
 			select {
