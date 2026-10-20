@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"log"
+	"net/http"
 	"os"
 	"path/filepath"
 	"sync"
@@ -27,6 +28,7 @@ type ArmAlerts struct {
 	photos     *OverviewPhotos // the photo sent with the alert; nil: none
 	gates      atomic.Pointer[Gates]
 	stateFile  string
+	snapshot   func(ip string) ([]byte, error) // the camera's own snapshot, when no frame is kept
 }
 
 const (
@@ -57,6 +59,9 @@ func NewArmAlerts(dispatcher enqueuer, journal *Journal, stateDir string) *ArmAl
 		dispatcher: dispatcher,
 		journal:    journal,
 		stateFile:  filepath.Join(stateDir, armAlertStateFn),
+		snapshot: func(ip string) ([]byte, error) {
+			return fetchSnapshot(&http.Client{Timeout: snapshotTimeout}, "http://"+ip+"/snapshot.JPG")
+		},
 	}
 	a.load()
 	return a
@@ -106,7 +111,7 @@ func (a *ArmAlerts) HandleState(ip, region string, on bool, at time.Time) {
 	if s.down && s.tip && !s.raisedSince.IsZero() {
 		s.raisedSince = time.Time{}
 		a.save()
-		a.send(ip, false, at)
+		go a.send(ip, false, at) // not under the lock: it may fetch a snapshot
 	}
 }
 
@@ -121,7 +126,7 @@ func (a *ArmAlerts) confirm(ip string, since time.Time) {
 	s.timer = nil
 	s.raisedSince = since
 	a.save()
-	a.send(ip, true, since)
+	go a.send(ip, true, since)
 }
 
 // send journals the alert's start or end and queues it for the vehicle log.
@@ -139,10 +144,22 @@ func (a *ArmAlerts) send(ip string, active bool, at time.Time) {
 	a.journal.Write(kind, map[string]interface{}{"camera_ip": ip, "gate": gate, "at": at.Local().Format(journalTimeFormat)})
 	log.Printf("[ARM] %s (%s): %s since %s", gate, ip, text, at.Local().Format("15:04:05"))
 
+	// The newest kept frame (a lane's overview camera), or else the camera's own snapshot (an
+	// arm camera that is only watched by motion.go, such as North Enter's .11: a Speco, no login)
 	var photo []byte
 	if a.photos != nil {
 		if f, ok := a.photos.Latest(ip); ok {
 			photo = f.data
+		}
+	}
+	if photo == nil {
+		if data, err := a.snapshot(ip); err == nil {
+			photo = data
+			if half, err := halfJPEG(data, frameQuality); err == nil { // 1920 x 1080 to 960 x 540, as the saved frames
+				photo = half
+			}
+		} else {
+			log.Printf("[ARM] %s: no photo for the alert: %v", ip, err)
 		}
 	}
 	uid := kind + "_" + ip + "_" + at.Local().Format("20060102-150405.000")

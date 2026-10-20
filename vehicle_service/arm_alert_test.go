@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -40,8 +41,10 @@ func TestArmAlerts(t *testing.T) {
 		t.Fatal(err)
 	}
 	q := &fakeQueue{}
+	noSnapshot := func(string) ([]byte, error) { return nil, errors.New("no camera in the test") }
 	a := NewArmAlerts(q, journal, dir)
 	a.after = 100 * time.Millisecond
+	a.snapshot = noSnapshot
 	a.SetGates(NewGates([]GateConfig{{Name: "South Enter", OverviewIP: "192.0.2.41"}}, nil))
 	ip := "192.0.2.41"
 	at := time.Date(2026, 10, 20, 12, 31, 0, 0, time.Local)
@@ -80,8 +83,10 @@ func TestArmAlerts(t *testing.T) {
 	// A restart keeps the alert on
 	b := NewArmAlerts(q, journal, dir)
 	b.after = a.after
+	b.snapshot = noSnapshot
 	b.HandleState(ip, armDownRegion, true, at.Add(time.Minute))
 	b.HandleState(ip, armTipRegion, true, at.Add(time.Minute))
+	time.Sleep(100 * time.Millisecond) // alerts are sent in the background
 	ev = q.list()
 	if len(ev) != 2 || ev[1]["alert_active"] != false || ev[1]["alert_text"] != "Arm OK again" {
 		t.Fatalf("the arm repaired after a restart: %v", ev)
