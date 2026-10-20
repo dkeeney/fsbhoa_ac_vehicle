@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"testing"
+	"time"
 )
 
 func TestGates(t *testing.T) {
@@ -79,5 +80,23 @@ func TestDoorKingRecordsGates(t *testing.T) {
 	}
 	if tagged == 0 || untagged == 0 {
 		t.Errorf("tagged %d WORKBENCH records and %d others, want some of each", tagged, untagged)
+	}
+}
+
+func TestOverviewCamerasLead(t *testing.T) {
+	lead := 6.5
+	g := NewGates(
+		[]GateConfig{{Name: "South Enter", OverviewIP: "192.168.107.141"}, {Name: "North Enter", OverviewIP: "192.168.107.10", PhotoLead: &lead}},
+		[]ExitLaneConfig{{Name: "North Exit", LPRIP: "192.168.107.139"}},
+	)
+	cams := g.OverviewCameras()
+	if c := cams["entry South Enter"]; c.IP != "192.168.107.141" || c.Lead != overviewPhotoLead {
+		t.Errorf("South Enter: %+v, want the default lead", c)
+	}
+	if c := cams["entry North Enter"]; c.IP != "192.168.107.10" || c.Lead != 6500*time.Millisecond {
+		t.Errorf("North Enter: %+v, want 6.5 s", c)
+	}
+	if _, ok := cams["exit North Exit"]; ok || len(cams) != 2 {
+		t.Errorf("cameras: %+v", cams)
 	}
 }

@@ -26,27 +26,27 @@ func testJPEG(t *testing.T, w, h int) []byte {
 func TestPhotoWatchKeepsAndPicks(t *testing.T) {
 	w := &photoWatch{}
 	t0 := time.Date(2026, 10, 20, 9, 0, 0, 0, time.Local)
-	for i := 0; i <= 80; i++ { // 40 s of frames, twice a second
+	for i := 0; i <= 120; i++ { // 60 s of frames, twice a second
 		w.add(photoFrame{at: t0.Add(time.Duration(i) * 500 * time.Millisecond), data: []byte{byte(i)}})
 	}
-	if n := len(w.frames); n != 61 {
-		t.Fatalf("kept %d frames, want the last 30 s (61)", n)
+	if n := len(w.frames); n != 91 {
+		t.Fatalf("kept %d frames, want the last 45 s (91)", n)
 	}
-	f, ok := w.nearest(t0.Add(35*time.Second + 200*time.Millisecond))
-	if !ok || f.data[0] != 70 {
-		t.Fatalf("nearest = %v %v, want frame 70", f.data, ok)
+	f, ok := w.nearest(t0.Add(55*time.Second + 200*time.Millisecond))
+	if !ok || f.data[0] != 110 {
+		t.Fatalf("nearest = %v %v, want frame 110", f.data, ok)
 	}
 	if _, ok := w.nearest(t0.Add(5 * time.Second)); ok {
 		t.Fatal("picked a frame for a moment older than the kept frames")
 	}
-	if _, ok := w.nearest(t0.Add(45 * time.Second)); ok {
+	if _, ok := w.nearest(t0.Add(65 * time.Second)); ok {
 		t.Fatal("picked a frame 5 s from the moment wanted")
 	}
 }
 
 func TestOverviewPhotosForRead(t *testing.T) {
 	o := NewOverviewPhotos()
-	lanes := map[string]string{"entry South Enter": "192.168.107.141"}
+	lanes := map[string]OverviewLane{"entry South Enter": {IP: "192.168.107.141", Lead: overviewPhotoLead}}
 	o.lanes.Store(&lanes)
 	capture := time.Date(2026, 10, 20, 9, 0, 56, 217e6, time.Local)
 	w := &photoWatch{ip: "192.168.107.141"}
@@ -141,4 +141,56 @@ func TestOverviewPhotosReolink(t *testing.T) {
 	if err == nil || strings.Contains(err.Error(), "secret") {
 		t.Fatalf("unreachable camera: err = %v", err)
 	}
+}
+
+// "auto" picks the frame with the most car in it, not the one at the lead.
+func TestPhotoWatchMostCar(t *testing.T) {
+	w := &photoWatch{}
+	capture := time.Date(2026, 10, 20, 10, 0, 0, 0, time.Local)
+	sizes := map[int]int{-6: 40, -5: 120, -4: 60} // seconds before the capture: the car's width in a 320-wide frame
+	for i := -40; i <= 1; i++ {
+		x := -1
+		if sizes[i] > 0 {
+			x = 100
+		}
+		frame := testFrame(t, 150, x)
+		if sizes[i] == 120 {
+			frame = testFrameWide(t, 150, 120)
+		}
+		w.add(photoFrame{at: capture.Add(time.Duration(i) * time.Second), data: frame})
+	}
+	f, ok := w.mostCar(capture)
+	if !ok || !f.at.Equal(capture.Add(-5*time.Second)) {
+		t.Fatalf("mostCar = %v %v, want the frame 5 s before the capture", f.at, ok)
+	}
+
+	empty := &photoWatch{}
+	for i := -40; i <= 1; i++ {
+		empty.add(photoFrame{at: capture.Add(time.Duration(i) * time.Second), data: testFrame(t, 150, -1)})
+	}
+	if _, ok := empty.mostCar(capture); ok {
+		t.Fatal("mostCar found a car in an empty lane")
+	}
+}
+
+// testFrameWide is testFrame with a wider car.
+func testFrameWide(t *testing.T, base uint8, width int) []byte {
+	t.Helper()
+	img := image.NewYCbCr(image.Rect(0, 0, 320, 240), image.YCbCrSubsampleRatio420)
+	for i := range img.Y {
+		img.Y[i] = base
+	}
+	for i := range img.Cb {
+		img.Cb[i], img.Cr[i] = 128, 128
+	}
+	for py := 60; py < 180; py++ {
+		for px := 60; px < 60+width; px++ {
+			img.Y[img.YOffset(px, py)] = base / 4
+		}
+	}
+	var out bytes.Buffer
+	if err := jpeg.Encode(&out, img, &jpeg.Options{Quality: 90}); err != nil {
+		t.Fatal(err)
+	}
+	return out.Bytes()
 }

@@ -31,24 +31,36 @@ import (
 type OverviewPhotos struct {
 	mu        sync.Mutex
 	watches   map[string]*photoWatch // by camera IP
-	lanes     atomic.Pointer[map[string]string]
+	lanes     atomic.Pointer[map[string]OverviewLane]
 	loginFile string
 	onFrame   func(ip string, f photoFrame) // each new frame, such as for counting cars; nil: none
 }
 
 const (
-	// The car is fully in view at the gate this long before the LPR camera's capture time:
+	// A lane's lead when its "Photo lead" setting is blank (the same as PHOTO_LEAD_DEFAULT in
+	// the settings page). The car is fully in view at the gate this long before the LPR camera's capture time:
 	// at South Enter's Reolink, 3.5 to 4.5 s before (2026-10-20, two cars), and gone 1.5 s
 	// before. The LPR cameras' clocks are part of this, so it shifts if one drifts.
 	overviewPhotoLead = 4 * time.Second
 	// A frame further than this from the moment wanted isn't the car's photo.
 	overviewPhotoMaxGap = 1500 * time.Millisecond
-	// Frames are kept this long: the lead, plus up to about 17 s until a read is sent (the
-	// photos arrive 1 to 7 s after the capture, and wait up to 10 s for each other).
-	overviewPhotoKeep     = 30 * time.Second
+	// Frames are kept this long: up to about 17 s until a read is sent (the photos arrive 1 to
+	// 7 s after the capture, and wait up to 10 s for each other), plus the lead, or for "auto"
+	// the 10 s it looks in and the 20 s or so of frames before that it takes the lane's
+	// background from.
+	overviewPhotoKeep = 45 * time.Second
+	// "auto": the frame with the most car in it, from this long before the capture to
+	// overviewAutoAfter after it, against the median of the frames up to the capture.
+	overviewAutoLook      = 10 * time.Second
+	overviewAutoAfter     = 500 * time.Millisecond
+	overviewAutoMin       = 0.01 // less than this share of the picture differing is no car: fall back to the lead
 	overviewPhotoInterval = 500 * time.Millisecond
-	overviewPhotoRetry    = 2 * time.Second // after a failure, before trying again: a single slow answer (seen 2026-10-20) mustn't leave a read without its photo
-	overviewPhotoMaxWidth = 1000            // larger snapshots (Speco, 1920 x 1080) are halved before sending
+	overviewPhotoRetry    = 2 * time.Second // after a second failure in a row, before trying again; after one, it tries again at once
+	// A snapshot takes 0.3 s (Reolink) to 1 s (Speco). The Reolink now and then doesn't answer
+	// (5 times in 75 minutes on 2026-10-20), and with a 5 s timeout and a wait after it, 3 of
+	// 34 South Enter reads had no frame near their moment.
+	overviewPhotoTimeout  = 3 * time.Second
+	overviewPhotoMaxWidth = 1000 // larger snapshots (Speco, 1920 x 1080) are halved before sending
 	overviewPhotoQuality  = 80
 
 	// The cameras' passwords file (CLAUDE.md, "Plate reads: FTP from the cameras"), owned by
@@ -87,8 +99,8 @@ func (o *OverviewPhotos) SetGates(g *Gates) {
 	lanes := g.OverviewCameras()
 	o.lanes.Store(&lanes)
 	want := map[string]bool{}
-	for _, ip := range lanes {
-		want[ip] = true
+	for _, l := range lanes {
+		want[l.IP] = true
 	}
 	o.mu.Lock()
 	defer o.mu.Unlock()
@@ -116,14 +128,22 @@ func (o *OverviewPhotos) ForRead(lane, direction string, capture time.Time) ([]b
 	if lanes == nil || capture.IsZero() {
 		return nil, time.Time{}
 	}
-	ip := (*lanes)[direction+" "+lane]
+	l := (*lanes)[direction+" "+lane]
+	ip := l.IP
 	o.mu.Lock()
 	w := o.watches[ip]
 	o.mu.Unlock()
 	if w == nil {
 		return nil, time.Time{}
 	}
-	f, ok := w.nearest(capture.Add(-overviewPhotoLead))
+	var f photoFrame
+	var ok bool
+	if l.Auto {
+		f, ok = w.mostCar(capture)
+	}
+	if !ok {
+		f, ok = w.nearest(capture.Add(-l.Lead))
+	}
 	if !ok {
 		log.Printf("[PHOTO] No overview frame from %s near %s for %s %s", ip, capture.Format("15:04:05.000"), direction, lane)
 		return nil, time.Time{}
@@ -177,6 +197,51 @@ func (w *photoWatch) nearest(t time.Time) (photoFrame, bool) {
 	return best, bestGap >= 0 && bestGap <= overviewPhotoMaxGap
 }
 
+// mostCar returns the frame, from overviewAutoLook before the capture to overviewAutoAfter
+// after it, that differs most from the lane's background (each pixel's median over the kept
+// frames up to the capture): the car the camera saw best. Found 2026-10-20 on the North and
+// South exit lanes and North Enter, where cars wait a varying time (at a keypad, at a gate)
+// before the plate is read. A car that waited longer than the background's span is part of
+// it, and isn't found.
+func (w *photoWatch) mostCar(capture time.Time) (photoFrame, bool) {
+	w.mu.Lock()
+	frames := append([]photoFrame(nil), w.frames...)
+	w.mu.Unlock()
+
+	var history, look [][]uint8
+	var lookFrames []photoFrame
+	for _, f := range frames {
+		if f.at.After(capture.Add(overviewAutoAfter)) {
+			break
+		}
+		img, err := jpeg.Decode(bytes.NewReader(f.data))
+		if err != nil {
+			continue
+		}
+		g := reduceTo(img, autoWidth, autoHeight)
+		if !f.at.After(capture) {
+			history = append(history, g)
+		}
+		if !f.at.Before(capture.Add(-overviewAutoLook)) {
+			look, lookFrames = append(look, g), append(lookFrames, f)
+		}
+	}
+	if len(history) < 3 || len(look) == 0 {
+		return photoFrame{}, false
+	}
+	bg := medianFrame(history)
+	best, bestScore := -1, 0.0
+	for i, g := range look {
+		if s := differingShare(g, bg); s > bestScore {
+			best, bestScore = i, s
+		}
+	}
+	if best < 0 || bestScore < overviewAutoMin {
+		return photoFrame{}, false
+	}
+	return lookFrames[best], true
+}
+
 func (w *photoWatch) add(f photoFrame) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -192,7 +257,7 @@ func (w *photoWatch) add(f photoFrame) {
 // run fetches snapshots until the watch is stopped. A frame's time is the middle of its
 // request, since the camera takes the picture somewhere in between.
 func (o *OverviewPhotos) run(w *photoWatch) {
-	client := &http.Client{Timeout: snapshotTimeout}
+	client := &http.Client{Timeout: overviewPhotoTimeout}
 	reolink := false // whether the camera is a Reolink (decided by the first answer)
 	failing := false
 	for {
@@ -221,8 +286,10 @@ func (o *OverviewPhotos) run(w *photoWatch) {
 			if !failing {
 				log.Printf("[PHOTO] %s: snapshot failed: %v", w.ip, err)
 				failing = true
+				wait = 0 // a single miss: try again at once
+			} else {
+				wait = overviewPhotoRetry
 			}
-			wait = overviewPhotoRetry
 		} else {
 			if failing {
 				log.Printf("[PHOTO] %s: snapshots working again", w.ip)

@@ -45,6 +45,8 @@ const (
 	countBackground         = 20      // frames in the background's median (every other frame: the last 20 s)
 	countWarmup             = 10      // frames before counting starts
 	countApproachWindow     = 8 * time.Second
+
+	autoWidth, autoHeight = 96, 54 // the overview photo's "auto" pick compares frames at this size
 )
 
 func NewCarCounter(journal *Journal, debugf func(string, ...interface{})) *CarCounter {
@@ -212,15 +214,18 @@ func (z *zoneCounter) step(t time.Time, g []uint8) []countEvent {
 	return events
 }
 
-// countGray reduces a frame to countWidth x countHeight brightness, averaging each block.
-func countGray(img image.Image) []uint8 {
+// countGray reduces a frame to countWidth x countHeight brightness.
+func countGray(img image.Image) []uint8 { return reduceTo(img, countWidth, countHeight) }
+
+// reduceTo reduces a frame to w x h brightness, averaging each block.
+func reduceTo(img image.Image, w, h int) []uint8 {
 	b := img.Bounds()
-	out := make([]uint8, countWidth*countHeight)
+	out := make([]uint8, w*h)
 	ycc, isYCC := img.(*image.YCbCr)
-	for y := 0; y < countHeight; y++ {
-		y0, y1 := b.Min.Y+y*b.Dy()/countHeight, b.Min.Y+(y+1)*b.Dy()/countHeight
-		for x := 0; x < countWidth; x++ {
-			x0, x1 := b.Min.X+x*b.Dx()/countWidth, b.Min.X+(x+1)*b.Dx()/countWidth
+	for y := 0; y < h; y++ {
+		y0, y1 := b.Min.Y+y*b.Dy()/h, b.Min.Y+(y+1)*b.Dy()/h
+		for x := 0; x < w; x++ {
+			x0, x1 := b.Min.X+x*b.Dx()/w, b.Min.X+(x+1)*b.Dx()/w
 			sum, n := 0, 0
 			for py := y0; py < y1; py++ {
 				for px := x0; px < x1; px++ {
@@ -234,7 +239,7 @@ func countGray(img image.Image) []uint8 {
 				}
 			}
 			if n > 0 {
-				out[y*countWidth+x] = uint8(sum / n)
+				out[y*w+x] = uint8(sum / n)
 			}
 		}
 	}
@@ -242,8 +247,11 @@ func countGray(img image.Image) []uint8 {
 }
 
 // background is each pixel's median over the kept frames.
-func background(history [][]uint8) []uint8 {
-	bg := make([]uint8, countWidth*countHeight)
+func background(history [][]uint8) []uint8 { return medianFrame(history) }
+
+// medianFrame is each pixel's median over frames of one size.
+func medianFrame(history [][]uint8) []uint8 {
+	bg := make([]uint8, len(history[0]))
 	vals := make([]int, len(history))
 	for i := range bg {
 		for k, h := range history {
@@ -253,6 +261,17 @@ func background(history [][]uint8) []uint8 {
 		bg[i] = uint8(vals[len(vals)/2])
 	}
 	return bg
+}
+
+// differingShare is the share of a frame's pixels that differ from the background, beyond the
+// picture's median difference.
+func differingShare(g, bg []uint8) float64 {
+	all := make([]bool, len(g))
+	for i := range all {
+		all[i] = true
+	}
+	s, _ := zoneShares(g, bg, all, all)
+	return s
 }
 
 // zoneShares is the share of each zone's pixels that differ from the background, beyond the

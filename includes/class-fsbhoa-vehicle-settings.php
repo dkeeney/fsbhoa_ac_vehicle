@@ -27,6 +27,12 @@ class FSBHOA_Vehicle_Settings {
 	// Where the LPR cameras' FTP uploads land (lpr_ftp/setup.sh makes it the upload account's home).
 	const LPR_DROP_DIR_DEFAULT = '/var/lib/fsbhoa/lpr_drop';
 
+	// A lane's photo lead (seconds before the plate's capture) when its cell is blank: the same as
+	// overviewPhotoLead in vehicle_service/photo.go. The most allowed: vehicle_service keeps 30 s of
+	// frames, and a read can reach it 17 s after its capture.
+	const PHOTO_LEAD_DEFAULT = 4;
+	const PHOTO_LEAD_MAX     = 10;
+
     private $vehicle_config_path = '/var/lib/fsbhoa/vehicle_service.json';
 	private static $instance = null;
 
@@ -670,6 +676,20 @@ class FSBHOA_Vehicle_Settings {
 					$lane[ $key ] = $ip;
 				}
 			}
+
+			// How long before the plate read the overview photo is taken, or "auto" to pick the
+			// frame with the most car in it; blank: vehicle_service's default lead
+			$lead = strtolower( trim( sanitize_text_field( $row['photo_lead'] ?? ( ! empty( $row['photo_auto'] ) ? 'auto' : '' ) ) ) );
+			if ( 'auto' === $lead ) {
+				$lane['photo_auto'] = true;
+			} elseif ( '' !== $lead ) {
+				if ( is_numeric( $lead ) && $lead >= 0 && $lead <= self::PHOTO_LEAD_MAX ) {
+					$lane['photo_lead'] = round( (float) $lead, 1 );
+				} else {
+					/* translators: 1: the rejected entry, 2: lane, 3: the largest lead allowed */
+					$warn( 'badlead', sprintf( __( 'Photo lead "%1$s" (%2$s) must be "auto" or a number of seconds from 0 to %3$d; it was not saved.', 'fsbhoa-ac-vehicle' ), $lead, $where, self::PHOTO_LEAD_MAX ) );
+				}
+			}
 			$lanes[] = $lane;
 		}
 		return $lanes;
@@ -700,6 +720,7 @@ class FSBHOA_Vehicle_Settings {
 					<?php foreach ( $spec['devices'] as $label ) : ?>
 						<th><?php echo esc_html( $label ); ?></th>
 					<?php endforeach; ?>
+					<th><?php esc_html_e( 'Photo lead (s)', 'fsbhoa-ac-vehicle' ); ?></th>
 				</tr>
 			</thead>
 			<tbody>
@@ -712,6 +733,7 @@ class FSBHOA_Vehicle_Settings {
 						<?php foreach ( array_keys( $spec['devices'] ) as $key ) : ?>
 							<td><input type="text" class="code" name="<?php echo esc_attr( $field( $i, $key ) ); ?>" value="<?php echo esc_attr( $lane[ $key ] ?? '' ); ?>" size="14" /></td>
 						<?php endforeach; ?>
+						<td><input type="text" name="<?php echo esc_attr( $field( $i, 'photo_lead' ) ); ?>" value="<?php echo esc_attr( ! empty( $lane['photo_auto'] ) ? 'auto' : ( $lane['photo_lead'] ?? '' ) ); ?>" size="5" placeholder="<?php echo esc_attr( self::PHOTO_LEAD_DEFAULT ); ?>" /></td>
 					</tr>
 				<?php endforeach; ?>
 			</tbody>
@@ -723,6 +745,9 @@ class FSBHOA_Vehicle_Settings {
 			} else {
 				esc_html_e( 'One row per exit lane. Exit lanes have no DoorKing controller or loop sensor; every plate read on one is logged as a vehicle leaving, under the lane\'s name. A car may enter at any entrance and leave at any exit, so exits aren\'t tied to an entrance. The name may repeat an entrance\'s name (e.g. South). The overview camera is optional.', 'fsbhoa-ac-vehicle' );
 			}
+			echo ' ';
+			/* translators: %s: the default lead in seconds */
+			echo esc_html( sprintf( __( 'Photo lead: how many seconds before the LPR camera\'s capture the overview camera\'s photo of the car is taken, when the car is best in view (blank: %s). It depends on where the overview camera is. "auto" takes, from the 10 seconds before the capture, the frame with the most car in it, for a camera where cars take a varying time to reach the plate reader (such as a wait at a keypad or a gate).', 'fsbhoa-ac-vehicle' ), self::PHOTO_LEAD_DEFAULT ) );
 			echo ' ';
 			esc_html_e( 'Fill in the blank row to add a lane; clear a lane\'s name to remove it. A device address may be used only once, in either table.', 'fsbhoa-ac-vehicle' );
 			?>
