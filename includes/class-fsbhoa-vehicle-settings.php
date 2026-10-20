@@ -406,11 +406,11 @@ class FSBHOA_Vehicle_Settings {
 			$parts = preg_split( '/\s+/', $line );
 			$error = '';
 			$kind  = '';
-			if ( 7 === count( $parts ) && 'bright' === $parts[6] ) {
+			if ( 7 === count( $parts ) && in_array( $parts[6], array( 'bright', 'bar' ), true ) ) {
 				$kind = array_pop( $parts );
 			}
 			if ( 6 !== count( $parts ) ) {
-				$error = __( 'it needs a camera address, a name and four edges, and may end with "bright"', 'fsbhoa-ac-vehicle' );
+				$error = __( 'it needs a camera address, a name and four edges, and may end with "bright" or "bar"', 'fsbhoa-ac-vehicle' );
 			} elseif ( ! in_array( $parts[0], $cameras, true ) ) {
 				$error = __( 'the camera is not a lane\'s overview or keypad camera', 'fsbhoa-ac-vehicle' );
 			} elseif ( ! preg_match( '/^[A-Za-z0-9_-]{1,20}$/', $parts[1] ) ) {
@@ -858,7 +858,7 @@ class FSBHOA_Vehicle_Settings {
 				 class="large-text code"
 				 placeholder="192.168.107.131 gate 54 20 82 50"><?php echo esc_textarea( self::motion_regions_text( $options['motion_regions'] ) ); ?></textarea>
 		<p class="description">
-			<?php esc_html_e( 'Areas of the overview and keypad cameras\' pictures that vehicle_service watches for motion, one a line: the camera\'s address (a lane\'s overview or keypad camera), a name (gate, arm, keypad), then the left, top, right and bottom edges in percent of the picture\'s width and height. A region ending with "bright" isn\'t watched for motion: it is on while enough of it is bright (the white arm against the hedge when it is up), and each change is recorded in the journal. It compares the camera\'s snapshot once a second; each pass of motion is recorded in the journal, and its frames are kept, half size, for 3 days in /var/lib/fsbhoa/overview_frames. Applied without a restart.', 'fsbhoa-ac-vehicle' ); ?>
+			<?php esc_html_e( 'Areas of the overview and keypad cameras\' pictures that vehicle_service watches for motion, one a line: the camera\'s address (a lane\'s overview or keypad camera), a name (gate, arm, keypad), then the left, top, right and bottom edges in percent of the picture\'s width and height. A region ending with "bright" isn\'t watched for motion: it is on while enough of it is bright (the white arm against the hedge when it is up), and each change is recorded in the journal. A region ending with "bar" is the same, but on while enough of it is a bright bar, brighter than the picture just above and below it (the lowered arm across the pavers), so sun on the pavers doesn\'t count. It compares the camera\'s snapshot once a second; each pass of motion is recorded in the journal, and its frames are kept, half size, for 3 days in /var/lib/fsbhoa/overview_frames. Applied without a restart.', 'fsbhoa-ac-vehicle' ); ?>
 		</p>
 		<?php
 	}

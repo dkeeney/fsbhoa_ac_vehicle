@@ -48,7 +48,9 @@ type MotionRegion struct {
 	Right  float64 `json:"right"`
 	Bottom float64 `json:"bottom"`
 	// "" watches for motion. "bright" is on while a share of its pixels are bright, such as
-	// the white arm against the hedge when it's up; each change is journaled.
+	// the white arm against the hedge when it's up; each change is journaled. "bar" is the
+	// same, but on while a share of it is a bright bar, brighter than the picture just above
+	// and below it (the lowered arm across the pavers), so sun on the pavers doesn't count.
 	Kind string `json:"kind,omitempty"`
 }
 
@@ -63,6 +65,9 @@ const (
 	brightLevel        = 170  // an averaged pixel is bright at this brightness (of 255)
 	brightOnShare      = 0.05 // a "bright" region is on when this share of its averaged pixels are bright (the arm, live: 0.10 to 0.11 up, 0.006 to 0.019 down)
 	brightSettleFrames = 2    // a "bright" region changes state after this many frames agree
+	barContrast        = 40   // a "bar" region's averaged pixel is bar when this much brighter (of 255) than the ones above and below it
+	barOffset          = 4.4  // and those are this far away, in percent of the picture's height (16 px of 360: past the arm's width)
+	barOnShare         = 0.10 // a "bar" region is on at this share (the arm down on .141, 2026-10-20: 0.29 to 0.36 at its pivot, 0.18 to 0.27 at its tip; up, 0 to 0.03)
 	motionQuietFrames  = 3    // a region's motion ends after this many still frames
 	motionPreroll      = 3    // frames kept from before the first motion
 	motionPostroll     = 2    // frames kept after the last region goes still
@@ -403,11 +408,18 @@ type brightChange struct {
 func (d *motionDetector) brightStates(t time.Time, img image.Image) []brightChange {
 	var changes []brightChange
 	for _, r := range d.regions {
-		if r.Kind != "bright" {
+		var share float64
+		var on bool
+		switch r.Kind {
+		case "bright":
+			share = brightShare(img, r.MotionRegion)
+			on = share >= brightOnShare
+		case "bar":
+			share = barShare(img, r.MotionRegion)
+			on = share >= barOnShare
+		default:
 			continue
 		}
-		share := brightShare(img, r.MotionRegion)
-		on := share >= brightOnShare
 		if r.known && on == r.on {
 			r.agree = 0
 			continue
@@ -423,33 +435,54 @@ func (d *motionDetector) brightStates(t time.Time, img image.Image) []brightChan
 // brightShare is the share of a region's brightScale x brightScale averages that are at
 // least brightLevel.
 func brightShare(img image.Image, r MotionRegion) float64 {
+	return cellShare(img, r, func(avg func(x, y int) int, x, y int) bool { return avg(x, y) >= brightLevel })
+}
+
+// barShare is the share of a region's brightScale x brightScale averages that are at least
+// barContrast brighter than both the averages barOffset above and below them: a bright bar,
+// such as the arm, and not an evenly lit surface or the edge of a shadow.
+func barShare(img image.Image, r MotionRegion) float64 {
+	off := int(barOffset / 100 * float64(img.Bounds().Dy()))
+	return cellShare(img, r, func(avg func(x, y int) int, x, y int) bool {
+		v := avg(x, y)
+		return v-avg(x, y-off) >= barContrast && v-avg(x, y+off) >= barContrast
+	})
+}
+
+// cellShare is the share of a region's brightScale x brightScale averages that pass a test,
+// given a function for the average at any point of the picture (clamped to the picture).
+func cellShare(img image.Image, r MotionRegion, pass func(avg func(x, y int) int, x, y int) bool) float64 {
 	b := img.Bounds()
 	x0, x1 := b.Min.X+int(r.Left/100*float64(b.Dx())), b.Min.X+int(r.Right/100*float64(b.Dx()))
 	y0, y1 := b.Min.Y+int(r.Top/100*float64(b.Dy())), b.Min.Y+int(r.Bottom/100*float64(b.Dy()))
 	ycc, isYCC := img.(*image.YCbCr)
-	n, bright := 0, 0
-	for y := y0; y+brightScale <= y1; y += brightScale {
-		for x := x0; x+brightScale <= x1; x += brightScale {
-			sum := 0
-			for dy := 0; dy < brightScale; dy++ {
-				for dx := 0; dx < brightScale; dx++ {
-					if isYCC {
-						sum += int(ycc.Y[ycc.YOffset(x+dx, y+dy)])
-					} else {
-						sum += int(color.GrayModel.Convert(img.At(x+dx, y+dy)).(color.Gray).Y)
-					}
+	avg := func(x, y int) int {
+		y = max(b.Min.Y, min(b.Max.Y-brightScale, y))
+		sum := 0
+		for dy := 0; dy < brightScale; dy++ {
+			for dx := 0; dx < brightScale; dx++ {
+				if isYCC {
+					sum += int(ycc.Y[ycc.YOffset(x+dx, y+dy)])
+				} else {
+					sum += int(color.GrayModel.Convert(img.At(x+dx, y+dy)).(color.Gray).Y)
 				}
 			}
+		}
+		return sum / (brightScale * brightScale)
+	}
+	n, on := 0, 0
+	for y := y0; y+brightScale <= y1; y += brightScale {
+		for x := x0; x+brightScale <= x1; x += brightScale {
 			n++
-			if sum/(brightScale*brightScale) >= brightLevel {
-				bright++
+			if pass(avg, x, y) {
+				on++
 			}
 		}
 	}
 	if n == 0 {
 		return 0
 	}
-	return float64(bright) / float64(n)
+	return float64(on) / float64(n)
 }
 
 func newMotionDetector(regions []MotionRegion) *motionDetector {

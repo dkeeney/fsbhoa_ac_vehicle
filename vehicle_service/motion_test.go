@@ -224,3 +224,40 @@ func TestMotionFromFrameSource(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 	}
 }
+
+// A "bar" region is on for the lowered arm, a thin bright bar across the pavers, in shade or
+// sun, and off for evenly sunlit pavers, a shadow's edge, or the pavers alone.
+func TestBarRegion(t *testing.T) {
+	r := MotionRegion{Name: "arm-tip", Kind: "bar", Left: 40, Top: 40, Right: 60, Bottom: 60}
+	frame := func(pavers, edge, bar uint8) image.Image {
+		img := image.NewYCbCr(image.Rect(0, 0, 640, 360), image.YCbCrSubsampleRatio420)
+		for y := 0; y < 360; y++ {
+			for x := 0; x < 640; x++ {
+				v := pavers
+				if y >= 180 {
+					v = edge // below a shadow's edge, through the middle of the region
+				}
+				if bar > 0 && y >= 176 && y < 184 {
+					v = bar // the arm, 8 px wide
+				}
+				img.Y[img.YOffset(x, y)] = v
+			}
+		}
+		return img
+	}
+	for _, c := range []struct {
+		name              string
+		pavers, edge, bar uint8
+		on                bool
+	}{
+		{"pavers in shade", 90, 90, 0, false},
+		{"pavers in sun", 195, 195, 0, false},
+		{"a shadow's edge", 90, 195, 0, false},
+		{"the arm in shade", 90, 90, 205, true},
+		{"the arm in sun", 190, 190, 250, true},
+	} {
+		if s := barShare(frame(c.pavers, c.edge, c.bar), r); (s >= barOnShare) != c.on {
+			t.Errorf("%s: share %v, want on %v", c.name, s, c.on)
+		}
+	}
+}
