@@ -35,8 +35,9 @@ type Motion struct {
 	journal  *Journal
 	debugf   func(string, ...interface{})
 	gates    atomic.Pointer[Gates]
-	watches  map[string]*cameraWatch // by camera IP
-	frames   *OverviewPhotos         // frames already being fetched (lanes' overview cameras); nil: none
+	watches  map[string]*cameraWatch                        // by camera IP
+	frames   *OverviewPhotos                                // frames already being fetched (lanes' overview cameras); nil: none
+	onState  func(ip, region string, on bool, at time.Time) // each "bright" or "bar" region's settled state; nil: none
 }
 
 // MotionRegion is one area of one camera's picture, in percent of its width and height.
@@ -88,6 +89,10 @@ func (m *Motion) SetFrameSource(o *OverviewPhotos) { m.frames = o }
 
 // SetGates gives the lanes, so each pass is journaled with its camera's lane.
 func (m *Motion) SetGates(g *Gates) { m.gates.Store(g) }
+
+// SetStateHandler sets who else hears each "bright" or "bar" region's settled state (the arm
+// alerts). Call before Run.
+func (m *Motion) SetStateHandler(h func(ip, region string, on bool, at time.Time)) { m.onState = h }
 
 // SetRegions starts watching each camera that has a region, restarts a camera whose regions
 // changed, and stops one that has none left. Applied without a restart.
@@ -248,6 +253,9 @@ func (w *cameraWatch) handleFrame(t time.Time, data []byte) {
 		}
 		w.m.journal.Write("region_state", entry)
 		w.m.debugf("[MOTION] %s: %s %v", w.ip, c.name, c.on)
+		if w.m.onState != nil {
+			w.m.onState(w.ip, c.name, c.on, t)
+		}
 	}
 	frame := motionFrame{t: t, jpeg: data}
 

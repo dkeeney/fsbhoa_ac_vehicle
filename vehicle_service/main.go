@@ -229,6 +229,10 @@ func main() {
 	// with the frames of each pass kept. Applied without a restart.
 	motion := NewMotion(cfg.OverviewFrameDir, cfg.OverviewFrameDays, journal, gsm.debugf)
 	motion.SetFrameSource(overviewPhotos) // the overview cameras' frames are fetched once, for both
+	// A broken arm, from the arm-down and arm-tip regions: an alert on the live monitor
+	armAlerts := NewArmAlerts(dispatcher, journal, cfg.JournalDir)
+	armAlerts.SetPhotos(overviewPhotos)
+	motion.SetStateHandler(armAlerts.HandleState)
 	go motion.Run()
 
 	// The gates' devices are the only addresses (besides this machine) that may call the
@@ -245,6 +249,7 @@ func main() {
 		motion.SetGates(g)
 		overviewPhotos.SetGates(g)
 		carCounter.SetGates(g)
+		armAlerts.SetGates(g)
 		if g.Count() == 0 {
 			log.Printf("[CONFIG] WARNING: no lanes configured; DoorKing records and loop changes aren't matched to a lane, and only this machine may call the webhooks")
 		}
