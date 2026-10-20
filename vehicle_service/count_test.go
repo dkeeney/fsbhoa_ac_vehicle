@@ -24,6 +24,9 @@ func newTestCounter() *zoneCounter {
 	return &zoneCounter{
 		approach: polygonMask([][2]float64{{0, 0}, {100, 0}, {100, 50}, {0, 50}}),
 		beyond:   polygonMask([][2]float64{{0, 50}, {100, 50}, {100, 100}, {0, 100}}),
+		aOn:      countOnShare,
+		bOn:      countOnShare,
+		window:   countApproachWindow,
 	}
 }
 
@@ -51,9 +54,29 @@ func TestCountCarIn(t *testing.T) {
 
 func TestCountCarBacked(t *testing.T) {
 	// Into the approach, stops, backs out the way it came
-	rows := [][2]int{{0, 20}, {5, 40}, {10, 44}, {10, 44}, {5, 40}, {0, 20}, {0, 0}, {0, 0}, {0, 0}}
+	rows := [][2]int{{0, 20}, {5, 40}, {10, 44}, {10, 44}, {5, 40}, {0, 20}}
+	if got := runCounter(newTestCounter(), rows); len(got) != 0 {
+		t.Fatalf("counted %v before the window passed, want nothing yet", got)
+	}
+	rows = append(rows, make([][2]int, 20)...) // 10 s of an empty lane: past the 8 s window
 	if got := runCounter(newTestCounter(), rows); got["car_backed"] != 1 || len(got) != 1 {
 		t.Fatalf("counted %v, want one car backed out", got)
+	}
+}
+
+// A car that waits between the zones (North Enter: the keypad, then the swing gate) is still
+// a car in when its zone's window covers the wait.
+func TestCountSlowCarWithWindow(t *testing.T) {
+	rows := [][2]int{{0, 20}, {5, 40}, {5, 40}, {0, 0}}
+	rows = append(rows, make([][2]int, 24)...) // 12 s out of both zones
+	rows = append(rows, [2]int{60, 90}, [2]int{60, 90}, [2]int{0, 0}, [2]int{0, 0})
+	if got := runCounter(newTestCounter(), rows); got["car_backed"] != 1 || got["beyond_only"] != 1 {
+		t.Fatalf("with the 8 s window: counted %v, want a car backed out and a beyond_only", got)
+	}
+	z := newTestCounter()
+	z.window = 20 * time.Second
+	if got := runCounter(z, rows); got["car"] != 1 || len(got) != 1 {
+		t.Fatalf("with a 20 s window: counted %v, want one car", got)
 	}
 }
 

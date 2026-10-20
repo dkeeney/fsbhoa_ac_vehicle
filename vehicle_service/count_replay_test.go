@@ -22,25 +22,41 @@ func TestCountReplay(t *testing.T) {
 	if dir == "" {
 		t.Skip("COUNT_REPLAY_DIR not set")
 	}
-	zones := map[string][][2]float64{}
+	// Lines as in the setting, without the camera: "approach|beyond <x> <y> ... [on=<share>] [window=<s>]"
+	var zones []CountZone
 	for _, line := range strings.Split(os.Getenv("COUNT_REPLAY_ZONES"), "\n") {
 		f := strings.Fields(line)
 		if len(f) < 7 {
 			continue
 		}
-		var pts [][2]float64
-		for i := 1; i+1 < len(f); i += 2 {
-			var x, y float64
-			fmt.Sscan(f[i], &x)
-			fmt.Sscan(f[i+1], &y)
-			pts = append(pts, [2]float64{x, y})
+		zone := CountZone{Camera: "replay", Zone: f[0]}
+		var nums []float64
+		for _, w := range f[1:] {
+			if k, v, ok := strings.Cut(w, "="); ok {
+				var x float64
+				fmt.Sscan(v, &x)
+				if k == "on" {
+					zone.On = x
+				} else if k == "window" {
+					zone.Window = x
+				}
+				continue
+			}
+			var x float64
+			fmt.Sscan(w, &x)
+			nums = append(nums, x)
 		}
-		zones[f[0]] = pts
+		for i := 0; i+1 < len(nums); i += 2 {
+			zone.Points = append(zone.Points, [2]float64{nums[i], nums[i+1]})
+		}
+		zones = append(zones, zone)
 	}
-	if zones["approach"] == nil || zones["beyond"] == nil {
+	c := NewCarCounter(nil, t.Logf)
+	c.SetZones(zones)
+	z := c.cameras["replay"]
+	if z == nil {
 		t.Fatal("COUNT_REPLAY_ZONES needs an approach and a beyond line")
 	}
-	z := &zoneCounter{approach: polygonMask(zones["approach"]), beyond: polygonMask(zones["beyond"])}
 
 	names, _ := filepath.Glob(filepath.Join(dir, "*.jpg"))
 	sort.Strings(names)

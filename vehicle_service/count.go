@@ -35,13 +35,14 @@ type CountZone struct {
 	Camera string       `json:"camera"`
 	Zone   string       `json:"zone"` // "approach" or "beyond"
 	Points [][2]float64 `json:"points"`
+	On     float64      `json:"on,omitempty"`     // the zone is full at this share; 0: countOnShare (empty at half)
+	Window float64      `json:"window,omitempty"` // approach only: seconds a car may take to reach "beyond"; 0: countApproachWindow
 }
 
 const (
 	countWidth, countHeight = 160, 90 // frames are compared at this size (1/4 of the Reolink's 640 x 360)
 	countPixelDiff          = 30      // a pixel differs from the background by this much (of 255), beyond the picture's typical difference
-	countOnShare            = 0.30    // a zone is full at this share of differing pixels (the arm rising through "approach" makes 0.17)
-	countOffShare           = 0.15    // and empty again below this
+	countOnShare            = 0.30    // a zone is full at this share of differing pixels (the arm rising through "approach" makes 0.17), and empty below half of it
 	countBackground         = 20      // frames in the background's median (every other frame: the last 20 s)
 	countWarmup             = 10      // frames before counting starts
 	countApproachWindow     = 8 * time.Second
@@ -59,17 +60,17 @@ func (c *CarCounter) SetGates(g *Gates) { c.gates.Store(g) }
 // SetZones sets the zones, keeping the state of a camera whose zones didn't change. A camera
 // counts only with both zones. Applied without a restart.
 func (c *CarCounter) SetZones(zones []CountZone) {
-	byCamera := map[string]map[string][][2]float64{}
+	byCamera := map[string]map[string]CountZone{}
 	for _, z := range zones {
 		if byCamera[z.Camera] == nil {
-			byCamera[z.Camera] = map[string][][2]float64{}
+			byCamera[z.Camera] = map[string]CountZone{}
 		}
-		byCamera[z.Camera][z.Zone] = z.Points
+		byCamera[z.Camera][z.Zone] = z
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	for ip, zc := range c.cameras {
-		if next := byCamera[ip]; !sameZones(next, zc.approachPts, zc.beyondPts) {
+		if next := byCamera[ip]; !sameZones(next, zc.approachZone, zc.beyondZone) {
 			delete(c.cameras, ip)
 			log.Printf("[COUNT] Stopped counting cars on %s", ip)
 		}
@@ -78,31 +79,45 @@ func (c *CarCounter) SetZones(zones []CountZone) {
 		if _, ok := c.cameras[ip]; ok {
 			continue
 		}
-		if z["approach"] == nil || z["beyond"] == nil {
+		ap, okA := z["approach"]
+		be, okB := z["beyond"]
+		if !okA || !okB {
 			log.Printf("[CONFIG] WARNING: %s needs both an approach and a beyond zone to count cars", ip)
 			continue
 		}
 		c.cameras[ip] = &zoneCounter{
-			ip: ip, approachPts: z["approach"], beyondPts: z["beyond"],
-			approach: polygonMask(z["approach"]), beyond: polygonMask(z["beyond"]),
+			ip: ip, approachZone: ap, beyondZone: be,
+			approach: polygonMask(ap.Points), beyond: polygonMask(be.Points),
+			aOn: shareOr(ap.On), bOn: shareOr(be.On), window: countApproachWindow,
+		}
+		if ap.Window > 0 {
+			c.cameras[ip].window = time.Duration(ap.Window * float64(time.Second))
 		}
 		log.Printf("[COUNT] Counting cars on %s", ip)
 	}
 }
 
-func sameZones(z map[string][][2]float64, approach, beyond [][2]float64) bool {
-	eq := func(a, b [][2]float64) bool {
-		if len(a) != len(b) {
+func sameZones(z map[string]CountZone, approach, beyond CountZone) bool {
+	eq := func(a, b CountZone) bool {
+		if len(a.Points) != len(b.Points) || a.On != b.On || a.Window != b.Window {
 			return false
 		}
-		for i := range a {
-			if a[i] != b[i] {
+		for i := range a.Points {
+			if a.Points[i] != b.Points[i] {
 				return false
 			}
 		}
 		return true
 	}
 	return z != nil && eq(z["approach"], approach) && eq(z["beyond"], beyond)
+}
+
+// shareOr is a zone's "full" share: its own, or countOnShare.
+func shareOr(on float64) float64 {
+	if on > 0 {
+		return on
+	}
+	return countOnShare
 }
 
 // HandleFrame takes one frame from a camera; frames from a camera without zones are ignored.
@@ -134,9 +149,12 @@ func (c *CarCounter) HandleFrame(ip string, f photoFrame) {
 // camera's photoWatch), so it needs no lock.
 type zoneCounter struct {
 	ip                   string
-	approachPts          [][2]float64
-	beyondPts            [][2]float64
-	approach, beyond     []bool // masks, countWidth x countHeight
+	approachZone         CountZone
+	beyondZone           CountZone
+	approach, beyond     []bool        // masks, countWidth x countHeight
+	aOn, bOn             float64       // each zone is full at this share, and empty below half of it
+	window               time.Duration // how long after "approach" a car may reach "beyond"
+	backedPending        bool          // "approach" emptied without "beyond": backed out, unless "beyond" fills within the window
 	history              [][]uint8
 	frames               int
 	approachOn, beyondOn bool
@@ -168,26 +186,31 @@ func (z *zoneCounter) step(t time.Time, g []uint8) []countEvent {
 	var events []countEvent
 	ts := func(t time.Time) string { return t.Local().Format(journalTimeFormat) }
 
-	if a >= countOnShare && !z.approachOn {
-		z.approachOn, z.approachStart, z.reached, z.apprPeak = true, t, false, 0
+	if a >= z.aOn && !z.approachOn {
+		if z.backedPending {
+			// Back in "approach" within the window: the same car (a share hovering at the line)
+			z.approachOn, z.backedPending = true, false
+		} else {
+			z.approachOn, z.approachStart, z.reached, z.apprPeak = true, t, false, 0
+		}
 	}
 	if z.approachOn {
 		z.approachLast = t
 		z.apprPeak = math.Max(z.apprPeak, a)
 	}
-	if b >= countOnShare && !z.beyondOn {
+	if b >= z.bOn && !z.beyondOn {
 		z.beyondOn, z.beyondStart, z.beyondPeak = true, t, 0
 		// After an approach: a car came in. Without one: something else (a pedestrian, a
 		// shadow, or a car backing out through the gate)
-		z.beyondFromApproach = z.approachOn || (!z.approachLast.IsZero() && t.Sub(z.approachLast) <= countApproachWindow)
+		z.beyondFromApproach = z.approachOn || (!z.approachLast.IsZero() && t.Sub(z.approachLast) <= z.window)
 		if z.beyondFromApproach {
-			z.reached = true
+			z.reached, z.backedPending = true, false
 		}
 	}
 	if z.beyondOn {
 		z.beyondPeak = math.Max(z.beyondPeak, b)
 	}
-	if b < countOffShare && z.beyondOn {
+	if b < z.bOn/2 && z.beyondOn {
 		z.beyondOn = false
 		kind := "beyond_only"
 		data := map[string]interface{}{
@@ -201,15 +224,19 @@ func (z *zoneCounter) step(t time.Time, g []uint8) []countEvent {
 		}
 		events = append(events, countEvent{kind, data})
 	}
-	if a < countOffShare && z.approachOn {
+	if a < z.aOn/2 && z.approachOn {
 		z.approachOn = false
 		if !z.reached && !z.beyondOn {
-			events = append(events, countEvent{"car_backed", map[string]interface{}{
-				"approach_start": ts(z.approachStart),
-				"approach_end":   ts(t),
-				"approach_peak":  math.Round(z.apprPeak*100) / 100,
-			}})
+			z.backedPending = true // decided when the window has passed
 		}
+	}
+	if z.backedPending && t.Sub(z.approachLast) > z.window {
+		z.backedPending = false
+		events = append(events, countEvent{"car_backed", map[string]interface{}{
+			"approach_start": ts(z.approachStart),
+			"approach_end":   ts(z.approachLast),
+			"approach_peak":  math.Round(z.apprPeak*100) / 100,
+		}})
 	}
 	return events
 }
