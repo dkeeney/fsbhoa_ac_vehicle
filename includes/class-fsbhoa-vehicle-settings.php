@@ -366,7 +366,7 @@ class FSBHOA_Vehicle_Settings {
 	}
 
 	/**
-	 * The cameras motion regions may be set on: every lane's overview and keypad camera.
+	 * The cameras motion regions may be set on: every lane's overview, keypad and arm camera.
 	 *
 	 * @return string[] camera IP addresses
 	 */
@@ -374,7 +374,7 @@ class FSBHOA_Vehicle_Settings {
 		$cameras = array();
 		foreach ( array( 'gates', 'exit_lanes' ) as $table ) {
 			foreach ( (array) ( $options[ $table ] ?? array() ) as $lane ) {
-				foreach ( array( 'overview_ip', 'keypad_ip' ) as $key ) {
+				foreach ( array( 'overview_ip', 'keypad_ip', 'arm_ip' ) as $key ) {
 					if ( ! empty( $lane[ $key ] ) ) {
 						$cameras[] = $lane[ $key ];
 					}
@@ -412,7 +412,7 @@ class FSBHOA_Vehicle_Settings {
 			if ( 6 !== count( $parts ) ) {
 				$error = __( 'it needs a camera address, a name and four edges, and may end with "bright" or "bar"', 'fsbhoa-ac-vehicle' );
 			} elseif ( ! in_array( $parts[0], $cameras, true ) ) {
-				$error = __( 'the camera is not a lane\'s overview or keypad camera', 'fsbhoa-ac-vehicle' );
+				$error = __( 'the camera is not a lane\'s overview, keypad or arm camera', 'fsbhoa-ac-vehicle' );
 			} elseif ( ! preg_match( '/^[A-Za-z0-9_-]{1,20}$/', $parts[1] ) ) {
 				$error = __( 'the name may have only letters, digits, - and _', 'fsbhoa-ac-vehicle' );
 			} elseif ( isset( $seen[ $parts[0] . ' ' . $parts[1] ] ) ) {
@@ -618,6 +618,7 @@ class FSBHOA_Vehicle_Settings {
 					'lpr_ip'      => __( 'LPR camera', 'fsbhoa-ac-vehicle' ),
 					'overview_ip' => __( 'Overview camera', 'fsbhoa-ac-vehicle' ),
 					'keypad_ip'   => __( 'Keypad camera', 'fsbhoa-ac-vehicle' ),
+					'arm_ip'      => __( 'Arm camera', 'fsbhoa-ac-vehicle' ),
 				),
 			),
 			'exit_lanes' => array(
@@ -768,7 +769,7 @@ class FSBHOA_Vehicle_Settings {
 		<p class="description">
 			<?php
 			if ( $spec['account'] ) {
-				esc_html_e( 'One row per entrance lane; each has its own DoorKing controller, loop sensor and cameras. The name is the gate shown in the vehicle log and on the monitor. The RAM account is the account name exactly as RAM sends it (as in RAM\'s account list); it is how a DoorKing record is matched to its lane. The addresses are the devices\' IP addresses: only they may call vehicle_service\'s webhooks, and the address tells which lane a call is from. The overview camera sees vehicles pass the gate (and the arm); the keypad camera sees them at the keypad and tag reader. Both are optional.', 'fsbhoa-ac-vehicle' );
+				esc_html_e( 'One row per entrance lane; each has its own DoorKing controller, loop sensor and cameras. The name is the gate shown in the vehicle log and on the monitor. The RAM account is the account name exactly as RAM sends it (as in RAM\'s account list); it is how a DoorKing record is matched to its lane. The addresses are the devices\' IP addresses: only they may call vehicle_service\'s webhooks, and the address tells which lane a call is from. The overview camera sees vehicles pass the gate; the keypad camera sees them at the keypad and tag reader; the arm camera sees the arm, for the broken arm alert (leave it blank when the overview camera sees the arm too). All three are optional; one camera can\'t be entered twice.', 'fsbhoa-ac-vehicle' );
 			} else {
 				esc_html_e( 'One row per exit lane. Exit lanes have no DoorKing controller or loop sensor; every plate read on one is logged as a vehicle leaving, under the lane\'s name. A car may enter at any entrance and leave at any exit, so exits aren\'t tied to an entrance. The name may repeat an entrance\'s name (e.g. South). The overview camera is optional.', 'fsbhoa-ac-vehicle' );
 			}
@@ -885,7 +886,7 @@ class FSBHOA_Vehicle_Settings {
 				 class="large-text code"
 				 placeholder="192.168.107.131 gate 54 20 82 50"><?php echo esc_textarea( self::motion_regions_text( $options['motion_regions'] ) ); ?></textarea>
 		<p class="description">
-			<?php esc_html_e( 'Areas of the overview and keypad cameras\' pictures that vehicle_service watches for motion, one a line: the camera\'s address (a lane\'s overview or keypad camera), a name (gate, arm, keypad), then the left, top, right and bottom edges in percent of the picture\'s width and height. A region ending with "bright" isn\'t watched for motion: it is on while enough of it is bright (the white arm against the hedge when it is up), and each change is recorded in the journal. A region ending with "bar" is the same, but on while enough of it is a bright bar, brighter than the picture just above and below it (the lowered arm across the pavers), so sun on the pavers doesn\'t count. A camera with "bar" regions named arm-down (on the lowered arm near its pivot) and arm-tip (on its outer part) raises a broken arm alert on the live monitor, a red banner with a sound, when the arm is down without its tip for 30 seconds, until the whole arm is seen down again. It compares the camera\'s snapshot once a second; each pass of motion is recorded in the journal, and its frames are kept, half size, for 3 days in /var/lib/fsbhoa/overview_frames. Applied without a restart.', 'fsbhoa-ac-vehicle' ); ?>
+			<?php esc_html_e( 'Areas of the overview, keypad and arm cameras\' pictures that vehicle_service watches for motion, one a line: the camera\'s address (a lane\'s overview, keypad or arm camera), a name (gate, arm, keypad), then the left, top, right and bottom edges in percent of the picture\'s width and height. A region ending with "bright" isn\'t watched for motion: it is on while enough of it is bright (the white arm against the hedge when it is up), and each change is recorded in the journal. A region ending with "bar" is the same, but on while enough of it is a bright bar, brighter than the picture just above and below it (the lowered arm across the pavers), so sun on the pavers doesn\'t count. A camera with "bar" regions named arm-down (on the lowered arm near its pivot) and arm-tip (on its outer part) raises a broken arm alert on the live monitor, a red card with a sound, when the arm is down without its tip for 30 seconds, until the whole arm is seen down again. It compares the camera\'s snapshot once a second; each pass of motion is recorded in the journal, and its frames are kept, half size, for 3 days in /var/lib/fsbhoa/overview_frames. Applied without a restart.', 'fsbhoa-ac-vehicle' ); ?>
 		</p>
 		<?php
 	}

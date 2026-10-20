@@ -261,3 +261,21 @@ func TestBarRegion(t *testing.T) {
 		}
 	}
 }
+
+// A steep arm (North Enter's, seen from .11) is a bar against the pavers left and right of it.
+func TestBarRegionSteep(t *testing.T) {
+	r := MotionRegion{Name: "arm-tip", Kind: "bar", Left: 45, Top: 40, Right: 55, Bottom: 60} // drawn close around the arm
+	img := image.NewYCbCr(image.Rect(0, 0, 640, 360), image.YCbCrSubsampleRatio420)
+	for y := 0; y < 360; y++ {
+		for x := 0; x < 640; x++ {
+			v := uint8(170) // washed-out pavers in the sun
+			if x >= 316 && x < 326 {
+				v = 240 // the arm, upright, 10 px wide
+			}
+			img.Y[img.YOffset(x, y)] = v
+		}
+	}
+	if s := barShare(img, r); s < barOnShare {
+		t.Errorf("an upright arm: share %v, want at least %v", s, barOnShare)
+	}
+}

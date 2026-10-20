@@ -17,6 +17,7 @@ type GateConfig struct {
 	LPRIP      string   `json:"lpr_ip"`               // LPR camera
 	OverviewIP string   `json:"overview_ip"`          // overview (context) camera: sees the vehicle pass the gate, and the arm
 	KeypadIP   string   `json:"keypad_ip"`            // keypad camera: sees the vehicle at the keypad and tag reader
+	ArmIP      string   `json:"arm_ip,omitempty"`     // arm camera, for the broken arm alert; "": the overview camera sees the arm
 	PhotoLead  *float64 `json:"photo_lead,omitempty"` // seconds before the plate's capture for the overview photo; nil: overviewPhotoLead
 	PhotoAuto  bool     `json:"photo_auto,omitempty"` // pick the overview photo by content instead (photo.go)
 }
@@ -35,7 +36,7 @@ type ExitLaneConfig struct {
 type GateDevice struct {
 	Gate      string // the lane's name
 	Direction string // "entry" or "exit"
-	Device    string // "loop", "lpr", "overview" or "keypad"
+	Device    string // "loop", "lpr", "overview", "keypad" or "arm"
 }
 
 // Gates indexes the lane tables for lookups by RAM account and by device address.
@@ -62,7 +63,7 @@ func NewGates(entrances []GateConfig, exits []ExitLaneConfig) *Gates {
 				g.byAccount[acct] = name
 			}
 		}
-		g.addDevices(name, "entry", map[string]string{"loop": gate.LoopIP, "lpr": gate.LPRIP, "overview": gate.OverviewIP, "keypad": gate.KeypadIP})
+		g.addDevices(name, "entry", map[string]string{"loop": gate.LoopIP, "lpr": gate.LPRIP, "overview": gate.OverviewIP, "keypad": gate.KeypadIP, "arm": gate.ArmIP})
 		if gate.PhotoLead != nil {
 			g.leads["entry "+name] = *gate.PhotoLead
 		}
@@ -81,7 +82,7 @@ func NewGates(entrances []GateConfig, exits []ExitLaneConfig) *Gates {
 }
 
 func (g *Gates) addDevices(lane, direction string, devices map[string]string) {
-	for _, device := range []string{"loop", "lpr", "overview", "keypad"} { // fixed order: the first use of an address wins
+	for _, device := range []string{"loop", "lpr", "overview", "keypad", "arm"} { // fixed order: the first use of an address wins
 		ip := strings.TrimSpace(devices[device])
 		if ip == "" {
 			continue

@@ -447,13 +447,15 @@ func brightShare(img image.Image, r MotionRegion) float64 {
 }
 
 // barShare is the share of a region's brightScale x brightScale averages that are at least
-// barContrast brighter than both the averages barOffset above and below them: a bright bar,
-// such as the arm, and not an evenly lit surface or the edge of a shadow.
+// barContrast brighter than both the averages barOffset above and below them, or both those
+// barOffset left and right of them: a bright bar, such as the arm, lying flat (South Enter)
+// or steep (North Enter), and not an evenly lit surface or the edge of a shadow.
 func barShare(img image.Image, r MotionRegion) float64 {
 	off := int(barOffset / 100 * float64(img.Bounds().Dy()))
 	return cellShare(img, r, func(avg func(x, y int) int, x, y int) bool {
 		v := avg(x, y)
-		return v-avg(x, y-off) >= barContrast && v-avg(x, y+off) >= barContrast
+		return (v-avg(x, y-off) >= barContrast && v-avg(x, y+off) >= barContrast) ||
+			(v-avg(x-off, y) >= barContrast && v-avg(x+off, y) >= barContrast)
 	})
 }
 
@@ -465,6 +467,7 @@ func cellShare(img image.Image, r MotionRegion, pass func(avg func(x, y int) int
 	y0, y1 := b.Min.Y+int(r.Top/100*float64(b.Dy())), b.Min.Y+int(r.Bottom/100*float64(b.Dy()))
 	ycc, isYCC := img.(*image.YCbCr)
 	avg := func(x, y int) int {
+		x = max(b.Min.X, min(b.Max.X-brightScale, x))
 		y = max(b.Min.Y, min(b.Max.Y-brightScale, y))
 		sum := 0
 		for dy := 0; dy < brightScale; dy++ {
