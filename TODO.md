@@ -108,7 +108,7 @@ Items 6, 9, 10 and 11 come down to one redesign: keep one in-progress event per 
 
 ## Alerts
 
-- [ ] **35. A second photo on each monitor card: the overview.** Requested 2026-10-20. Today a card shows only the plate crop, and clicking it opens the LPR camera's full view. Add a thumbnail of the lane's overview camera next to the plate, opening the full image when clicked.
+- [ ] **35. A second photo on each monitor card: the overview.** Requested 2026-10-20. *Built 2026-10-20 for plate reads* (CLAUDE.md, "Cameras"): core's `overview_image_data` column and card thumbnail, and `vehicle_service` sends the lane overview camera's frame from 4 s before each read's capture. Still to do: check the lead at the other lanes' overview cameras, and the photo for a car the LPR missed (below). Today a card shows only the plate crop, and clicking it opens the LPR camera's full view. Add a thumbnail of the lane's overview camera next to the plate, opening the full image when clicked.
   - **Source:** at South Enter, the Reolink (192.168.107.141, `cmd=Snap`, 3840 x 2160; shrink it like the scene photo) taken when the car passes, or the nearest saved overview frame (`overview_frame_dir`) to the plate read. Lanes without a Reolink use their overview camera (`/snapshot.JPG`, no login).
   - **Core's part:** the vehicle log has two image columns, the plate crop (`lpr_image_data`) and the LPR scene (`context_image_data`), so a third needs a column in core's three schema files and the payload, and the card and lightbox need the thumbnail.
   - Also the photo for a car the LPR missed: such a car gets an entry from the Reolink's line crossing, with the overview as its only picture.

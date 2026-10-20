@@ -216,6 +216,9 @@ func main() {
 	// until per-lane correlation is built.
 	lprDrop := NewLPRDrop(cfg.LPRDropDir, journal, gsm.debugf)
 	plateEvents := NewPlateEvents(dispatcher, cfg.PlateEvents)
+	// Each lane's overview camera, kept a few seconds back, for a photo of the car with each read
+	overviewPhotos := NewOverviewPhotos()
+	plateEvents.SetPhotos(overviewPhotos)
 	lprDrop.SetEvents(plateEvents)
 	go lprDrop.Run()
 
@@ -236,6 +239,7 @@ func main() {
 		dkRecords.SetGates(g)
 		lprDrop.SetGates(g)
 		motion.SetGates(g)
+		overviewPhotos.SetGates(g)
 		if g.Count() == 0 {
 			log.Printf("[CONFIG] WARNING: no lanes configured; DoorKing records and loop changes aren't matched to a lane, and only this machine may call the webhooks")
 		}

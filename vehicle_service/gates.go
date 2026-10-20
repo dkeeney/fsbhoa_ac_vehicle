@@ -130,3 +130,14 @@ func (g *Gates) Count() int {
 	}
 	return len(lanes)
 }
+
+// OverviewCameras returns each lane's overview camera, keyed by "<direction> <lane>".
+func (g *Gates) OverviewCameras() map[string]string {
+	cams := map[string]string{}
+	for addr, d := range g.byAddr {
+		if d.Device == "overview" {
+			cams[d.Direction+" "+d.Gate] = addr.String()
+		}
+	}
+	return cams
+}

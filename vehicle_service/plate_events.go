@@ -20,6 +20,7 @@ import (
 type PlateEvents struct {
 	enabled    atomic.Bool
 	dispatcher *Dispatcher
+	photos     *OverviewPhotos // the lane's overview photo of the car; nil: none
 }
 
 // PlateRead is one camera read, as journaled (lpr.go).
@@ -52,6 +53,11 @@ func NewPlateEvents(dispatcher *Dispatcher, enabled bool) *PlateEvents {
 	p := &PlateEvents{dispatcher: dispatcher}
 	p.SetEnabled(enabled)
 	return p
+}
+
+// SetPhotos sets where each read's overview photo comes from. Call before reads are sent.
+func (p *PlateEvents) SetPhotos(o *OverviewPhotos) {
+	p.photos = o
 }
 
 func (p *PlateEvents) SetEnabled(on bool) {
@@ -110,17 +116,30 @@ func (p *PlateEvents) Send(r PlateRead) bool {
 		details["missing"] = r.Missing
 	}
 
+	// The overview camera's photo of the car at the gate, taken a few seconds before the
+	// capture (photo.go). Only with the camera's capture time: arrival is too late to say.
+	var overview []byte
+	if p.photos != nil && r.Gate != "" {
+		if capture, err := time.ParseInLocation("2006-01-02 15:04:05.000", lprCaptureTimeText(r.CaptureTime), time.Local); err == nil {
+			var at time.Time
+			if overview, at = p.photos.ForRead(r.Gate, direction, capture); overview != nil {
+				details["overview_photo_at"] = at.Format(time.RFC3339Nano)
+			}
+		}
+	}
+
 	// One event per read: a retried post of the same read is stored once
 	uid := "lpr_" + r.Camera + "_" + r.CaptureTime
 	payload, err := json.Marshal(map[string]interface{}{
-		"event_uid":         uid,
-		"event_timestamp":   when,
-		"gate_identifier":   gate,
-		"direction":         direction,
-		"lpr_plate":         r.Plate,
-		"lpr_image_b64":     fileB64(r.PlateFile, false),
-		"context_image_b64": fileB64(r.SceneFile, true),
-		"raw_details":       details,
+		"event_uid":          uid,
+		"event_timestamp":    when,
+		"gate_identifier":    gate,
+		"direction":          direction,
+		"lpr_plate":          r.Plate,
+		"lpr_image_b64":      fileB64(r.PlateFile, false),
+		"context_image_b64":  fileB64(r.SceneFile, true),
+		"overview_image_b64": b64(overview),
+		"raw_details":        details,
 	})
 	if err != nil {
 		log.Printf("[ERROR] Plate event JSON: %v", err)
@@ -132,6 +151,14 @@ func (p *PlateEvents) Send(r PlateRead) bool {
 	}
 	log.Printf("[DISPATCH] Plate event %s: %s %s %q", uid, gate, direction, r.Plate)
 	return true
+}
+
+// b64 returns a photo base64-encoded; "" if there is none.
+func b64(data []byte) string {
+	if len(data) == 0 {
+		return ""
+	}
+	return base64.StdEncoding.EncodeToString(data)
 }
 
 // fileB64 returns a photo base64-encoded, shrunk first if asked; "" if there is none.

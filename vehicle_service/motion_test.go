@@ -86,7 +86,7 @@ func TestMotionPass(t *testing.T) {
 		t.Fatal("the pass didn't end")
 	}
 
-	f, err := os.Open(filepath.Join(dir, "journal", "journal-2026-10-17.jsonl"))
+	f, err := os.Open(filepath.Join(dir, "journal", "journal-"+time.Now().Format("2006-01-02")+".jsonl")) // the journal is named by the day it is written
 	if err != nil {
 		t.Fatal(err)
 	}
