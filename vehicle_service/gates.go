@@ -157,6 +157,18 @@ type OverviewLane struct {
 
 // OverviewCameras returns each lane's overview camera, keyed by "<direction> <lane>", with
 // the lane's photo lead (overviewPhotoLead where the lane has none).
+// ArmCameras is the address of each entrance lane's arm camera (blank in a lane whose overview
+// camera sees the arm). Their frames are kept too, for counting cars at the arm (count.go).
+func (g *Gates) ArmCameras() []string {
+	var ips []string
+	for addr, d := range g.byAddr {
+		if d.Device == "arm" {
+			ips = append(ips, addr.String())
+		}
+	}
+	return ips
+}
+
 func (g *Gates) OverviewCameras() map[string]OverviewLane {
 	cams := map[string]OverviewLane{}
 	for addr, d := range g.byAddr {

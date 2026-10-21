@@ -93,14 +93,17 @@ func NewOverviewPhotos() *OverviewPhotos {
 // before SetGates.
 func (o *OverviewPhotos) SetFrameHandler(h func(ip string, f photoFrame)) { o.onFrame = h }
 
-// SetGates watches each lane's overview camera, and stops watching a camera no lane has.
-// Applied without a restart.
+// SetGates watches each lane's overview camera, and its arm camera (frames for the car count
+// and the arm, not photos), and stops watching a camera no lane has. Applied without a restart.
 func (o *OverviewPhotos) SetGates(g *Gates) {
 	lanes := g.OverviewCameras()
 	o.lanes.Store(&lanes)
 	want := map[string]bool{}
 	for _, l := range lanes {
 		want[l.IP] = true
+	}
+	for _, ip := range g.ArmCameras() {
+		want[ip] = true
 	}
 	o.mu.Lock()
 	defer o.mu.Unlock()

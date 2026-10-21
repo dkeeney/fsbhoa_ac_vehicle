@@ -182,7 +182,11 @@ func (z *zoneCounter) step(t time.Time, g []uint8) []countEvent {
 	if z.frames < countWarmup {
 		return nil
 	}
-	a, b := zoneShares(g, background(z.history), z.approach, z.beyond)
+	bg := background(z.history)
+	if exposureJump(g, bg) {
+		return nil // the camera changed its exposure: the whole picture differs, not a car
+	}
+	a, b := zoneShares(g, bg, z.approach, z.beyond)
 	var events []countEvent
 	ts := func(t time.Time) string { return t.Local().Format(journalTimeFormat) }
 
@@ -299,6 +303,22 @@ func differingShare(g, bg []uint8) float64 {
 	}
 	s, _ := zoneShares(g, bg, all, all)
 	return s
+}
+
+// countExposureJump is how far (of 255) the whole picture's median may move from the
+// background before a frame is skipped: .11, in glare, now and then gives one frame far darker.
+const countExposureJump = 25
+
+// exposureJump reports whether a frame's median brightness differs from the background's by
+// more than countExposureJump.
+func exposureJump(g, bg []uint8) bool {
+	d := make([]int, len(g))
+	for i := range g {
+		d[i] = int(g[i]) - int(bg[i])
+	}
+	sort.Ints(d)
+	m := d[len(d)/2]
+	return m > countExposureJump || m < -countExposureJump
 }
 
 // zoneShares is the share of each zone's pixels that differ from the background, beyond the

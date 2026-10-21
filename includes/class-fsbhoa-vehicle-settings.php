@@ -484,12 +484,14 @@ class FSBHOA_Vehicle_Settings {
 		if ( is_array( $text ) ) { // already parsed (an option saved before)
 			$text = self::count_zones_text( $text );
 		}
-		// Only the overview cameras: vehicle_service counts from the frames it keeps for their photos
+		// Only the overview and arm cameras: vehicle_service counts from the frames it keeps of them
 		$cameras = array();
 		foreach ( array( 'gates', 'exit_lanes' ) as $table ) {
 			foreach ( (array) ( $options[ $table ] ?? array() ) as $lane ) {
-				if ( ! empty( $lane['overview_ip'] ) ) {
-					$cameras[] = $lane['overview_ip'];
+				foreach ( array( 'overview_ip', 'arm_ip' ) as $key ) {
+					if ( ! empty( $lane[ $key ] ) ) {
+						$cameras[] = $lane[ $key ];
+					}
 				}
 			}
 		}
@@ -525,7 +527,7 @@ class FSBHOA_Vehicle_Settings {
 			} elseif ( count( $parts ) < 2 || ! in_array( $parts[1], array( 'approach', 'beyond' ), true ) ) {
 				$error = __( 'it needs a camera address, then "approach" or "beyond", then the corners', 'fsbhoa-ac-vehicle' );
 			} elseif ( ! in_array( $parts[0], $cameras, true ) ) {
-				$error = __( 'the camera is not a lane\'s overview camera', 'fsbhoa-ac-vehicle' );
+				$error = __( 'the camera is not a lane\'s overview or arm camera', 'fsbhoa-ac-vehicle' );
 			} elseif ( isset( $seen[ $parts[0] . ' ' . $parts[1] ] ) ) {
 				$error = __( 'the camera already has that zone', 'fsbhoa-ac-vehicle' );
 			} elseif ( count( $coords ) % 2 || count( $coords ) < 6 || count( $coords ) > 24 ) {
