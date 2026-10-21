@@ -33,6 +33,13 @@ class FSBHOA_Vehicle_Settings {
 	const PHOTO_LEAD_DEFAULT = 4;
 	const PHOTO_LEAD_MAX     = 10;
 
+	// How long an entrance lane's arm must look broken before the alert, when its cell is blank:
+	// the same as armBrokenAfter in vehicle_service/arm_alert.go. Haze or a car at the arm can hide
+	// the arm's tip for a minute or so.
+	const ARM_ALERT_AFTER_DEFAULT = 180;
+	const ARM_ALERT_AFTER_MIN     = 30;
+	const ARM_ALERT_AFTER_MAX     = 3600;
+
     private $vehicle_config_path = '/var/lib/fsbhoa/vehicle_service.json';
 	private static $instance = null;
 
@@ -608,13 +615,16 @@ class FSBHOA_Vehicle_Settings {
 	 * controller (RAM account), a loop sensor and cameras; exit lanes only cameras. A car may
 	 * enter at any entrance and leave at any exit, so the two aren't linked.
 	 *
-	 * @return array table key => array( 'account' => bool, 'devices' => field => label )
+	 * @return array table key => array( 'account' => bool, 'arm_alert' => bool, 'second' => device fields
+	 *               on the lane's second line, 'devices' => field => label )
 	 */
 	private static function lane_tables() {
 		return array(
 			'gates'      => array(
-				'title'   => __( 'Entrance lane', 'fsbhoa-ac-vehicle' ),
-				'account' => true,
+				'title'     => __( 'Entrance lane', 'fsbhoa-ac-vehicle' ),
+				'account'   => true,
+				'arm_alert' => true,
+				'second'    => array( 'keypad_ip', 'arm_ip' ), // shown on the lane's second line, so the table fits
 				'devices' => array(
 					'loop_ip'     => __( 'Loop sensor', 'fsbhoa-ac-vehicle' ),
 					'lpr_ip'      => __( 'LPR camera', 'fsbhoa-ac-vehicle' ),
@@ -624,8 +634,10 @@ class FSBHOA_Vehicle_Settings {
 				),
 			),
 			'exit_lanes' => array(
-				'title'   => __( 'Exit lane', 'fsbhoa-ac-vehicle' ),
-				'account' => false,
+				'title'     => __( 'Exit lane', 'fsbhoa-ac-vehicle' ),
+				'account'   => false,
+				'arm_alert' => false,
+				'second'    => array(),
 				'devices' => array(
 					'lpr_ip'      => __( 'LPR camera', 'fsbhoa-ac-vehicle' ),
 					'overview_ip' => __( 'Overview camera', 'fsbhoa-ac-vehicle' ),
@@ -720,6 +732,19 @@ class FSBHOA_Vehicle_Settings {
 					$warn( 'badlead', sprintf( __( 'Photo lead "%1$s" (%2$s) must be "auto" or a number of seconds from 0 to %3$d; it was not saved.', 'fsbhoa-ac-vehicle' ), $lead, $where, self::PHOTO_LEAD_MAX ) );
 				}
 			}
+
+			// How long the arm must look broken before the alert; blank: vehicle_service's default
+			if ( $spec['arm_alert'] ) {
+				$wait = trim( sanitize_text_field( $row['arm_alert_after'] ?? '' ) );
+				if ( '' !== $wait ) {
+					if ( is_numeric( $wait ) && $wait >= self::ARM_ALERT_AFTER_MIN && $wait <= self::ARM_ALERT_AFTER_MAX ) {
+						$lane['arm_alert_after'] = (int) round( (float) $wait );
+					} else {
+						/* translators: 1: the rejected entry, 2: lane, 3: fewest seconds, 4: most seconds */
+						$warn( 'badarmwait', sprintf( __( 'Arm alert after "%1$s" (%2$s) must be a number of seconds from %3$d to %4$d; it was not saved.', 'fsbhoa-ac-vehicle' ), $wait, $where, self::ARM_ALERT_AFTER_MIN, self::ARM_ALERT_AFTER_MAX ) );
+					}
+				}
+			}
 			$lanes[] = $lane;
 		}
 		return $lanes;
@@ -739,34 +764,60 @@ class FSBHOA_Vehicle_Settings {
 		$field   = function ( $i, $key ) use ( $table ) {
 			return self::OPTION_NAME . '[' . $table . '][' . $i . '][' . $key . ']';
 		};
+		$first   = array_diff_key( $spec['devices'], array_flip( $spec['second'] ) );
 		?>
-		<table class="widefat striped" style="max-width: 900px;">
+		<table class="widefat" style="max-width: 900px;">
 			<thead>
 				<tr>
 					<th><?php esc_html_e( 'Name', 'fsbhoa-ac-vehicle' ); ?></th>
 					<?php if ( $spec['account'] ) : ?>
 						<th><?php esc_html_e( 'RAM account', 'fsbhoa-ac-vehicle' ); ?></th>
 					<?php endif; ?>
-					<?php foreach ( $spec['devices'] as $label ) : ?>
+					<?php foreach ( $first as $label ) : ?>
 						<th><?php echo esc_html( $label ); ?></th>
 					<?php endforeach; ?>
-					<th><?php esc_html_e( 'Photo lead (s)', 'fsbhoa-ac-vehicle' ); ?></th>
 				</tr>
 			</thead>
-			<tbody>
-				<?php foreach ( $lanes as $i => $lane ) : ?>
+			<?php foreach ( $lanes as $i => $lane ) : ?>
+				<?php // Each lane is two lines: its devices, then its timings ?>
+				<tbody style="border-top: 2px solid #c3c4c7;">
 					<tr>
 						<td><input type="text" name="<?php echo esc_attr( $field( $i, 'name' ) ); ?>" value="<?php echo esc_attr( $lane['name'] ?? '' ); ?>" maxlength="32" size="10" placeholder="<?php echo empty( $lane ) ? esc_attr__( 'New lane', 'fsbhoa-ac-vehicle' ) : ''; ?>" /></td>
 						<?php if ( $spec['account'] ) : ?>
 							<td><input type="text" name="<?php echo esc_attr( $field( $i, 'ram_account' ) ); ?>" value="<?php echo esc_attr( $lane['ram_account'] ?? '' ); ?>" size="16" /></td>
 						<?php endif; ?>
-						<?php foreach ( array_keys( $spec['devices'] ) as $key ) : ?>
+						<?php foreach ( array_keys( $first ) as $key ) : ?>
 							<td><input type="text" class="code" name="<?php echo esc_attr( $field( $i, $key ) ); ?>" value="<?php echo esc_attr( $lane[ $key ] ?? '' ); ?>" size="14" /></td>
 						<?php endforeach; ?>
-						<td><input type="text" name="<?php echo esc_attr( $field( $i, 'photo_lead' ) ); ?>" value="<?php echo esc_attr( ! empty( $lane['photo_auto'] ) ? 'auto' : ( $lane['photo_lead'] ?? '' ) ); ?>" size="5" placeholder="<?php echo esc_attr( self::PHOTO_LEAD_DEFAULT ); ?>" /></td>
 					</tr>
-				<?php endforeach; ?>
-			</tbody>
+					<tr>
+						<td></td>
+						<?php
+						// The second line's fields, one a column, each labelled above its box
+						$cells = array();
+						foreach ( $spec['second'] as $key ) {
+							$cells[] = array( $spec['devices'][ $key ], $key, $lane[ $key ] ?? '', 'code', 14, '' );
+						}
+						$cells[] = array( __( 'Photo lead (s)', 'fsbhoa-ac-vehicle' ), 'photo_lead', ! empty( $lane['photo_auto'] ) ? 'auto' : ( $lane['photo_lead'] ?? '' ), '', 5, self::PHOTO_LEAD_DEFAULT );
+						if ( $spec['arm_alert'] ) {
+							$cells[] = array( __( 'Arm alert after (s)', 'fsbhoa-ac-vehicle' ), 'arm_alert_after', $lane['arm_alert_after'] ?? '', '', 5, self::ARM_ALERT_AFTER_DEFAULT );
+						}
+						$columns = count( $first ) + ( $spec['account'] ? 1 : 0 );
+						?>
+						<?php foreach ( $cells as list( $label, $key, $value, $class, $size, $placeholder ) ) : ?>
+							<td>
+								<label>
+									<span style="display: block; font-size: 12px; color: #50575e;"><?php echo esc_html( $label ); ?></span>
+									<input type="text" class="<?php echo esc_attr( $class ); ?>" name="<?php echo esc_attr( $field( $i, $key ) ); ?>" value="<?php echo esc_attr( $value ); ?>" size="<?php echo esc_attr( $size ); ?>" placeholder="<?php echo esc_attr( $placeholder ); ?>" />
+								</label>
+							</td>
+						<?php endforeach; ?>
+						<?php if ( $columns > count( $cells ) ) : ?>
+							<td colspan="<?php echo esc_attr( $columns - count( $cells ) ); ?>"></td>
+						<?php endif; ?>
+					</tr>
+				</tbody>
+			<?php endforeach; ?>
 		</table>
 		<p class="description">
 			<?php
@@ -779,6 +830,11 @@ class FSBHOA_Vehicle_Settings {
 			/* translators: %s: the default lead in seconds */
 			echo esc_html( sprintf( __( 'Photo lead: how many seconds before the LPR camera\'s capture the overview camera\'s photo of the car is taken, when the car is best in view (blank: %s). It depends on where the overview camera is. "auto" takes, from the 10 seconds before the capture, the frame with the most car in it, for a camera where cars take a varying time to reach the plate reader (such as a wait at a keypad or a gate).', 'fsbhoa-ac-vehicle' ), self::PHOTO_LEAD_DEFAULT ) );
 			echo ' ';
+			if ( $spec['arm_alert'] ) {
+				/* translators: 1: the default wait in seconds, 2: fewest seconds, 3: most seconds */
+				echo esc_html( sprintf( __( 'Arm alert after: how long the arm must look broken (down without its outer part) before the monitor\'s alarm, in seconds (blank: %1$d; %2$d to %3$d). Haze, glare or a car waiting at the arm can hide the arm\'s outer part for a minute or so; an arm that really broke stays that way.', 'fsbhoa-ac-vehicle' ), self::ARM_ALERT_AFTER_DEFAULT, self::ARM_ALERT_AFTER_MIN, self::ARM_ALERT_AFTER_MAX ) );
+				echo ' ';
+			}
 			esc_html_e( 'Fill in the blank row to add a lane; clear a lane\'s name to remove it. A device address may be used only once, in either table.', 'fsbhoa-ac-vehicle' );
 			?>
 		</p>

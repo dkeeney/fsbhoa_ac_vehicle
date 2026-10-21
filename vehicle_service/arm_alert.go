@@ -13,7 +13,8 @@ import (
 
 // ArmAlerts tells the staff when a lane's arm is broken. A lane's overview camera has two
 // "bar" regions on the lowered arm (motion.go): "arm-down" near its pivot and "arm-tip" on
-// its outer part. The arm down at its pivot without its tip, for armBrokenAfter, is a broken
+// its outer part. The arm down at its pivot without its tip, for the lane's wait (the Entrance
+// Lanes table's "Arm alert after"; blank: armBrokenAfter), is a broken
 // arm (2026-10-20 12:31: a truck towing a wood chipper broke South Enter's arm in half). The
 // alert goes to the vehicle log as a lane alert (core's alert_key "arm_broken"), which the
 // live monitor shows as a red banner with a sound, until the whole arm is seen down again.
@@ -35,7 +36,7 @@ const (
 	armDownRegion   = "arm-down"
 	armTipRegion    = "arm-tip"
 	armAlertKey     = "arm_broken"
-	armBrokenAfter  = 30 * time.Second // the tip goes off about a second before the pivot each time the arm rises
+	armBrokenAfter  = 3 * time.Minute // the tip goes off about a second before the pivot each time the arm rises, and haze or a car can hide it for a minute or so (North Enter's .11, 2026-10-21)
 	armAlertStateFn = "arm_alerts.json"
 )
 
@@ -98,7 +99,13 @@ func (a *ArmAlerts) HandleState(ip, region string, on bool, at time.Time) {
 		if s.brokenSince.IsZero() {
 			s.brokenSince = at
 			since := at
-			s.timer = time.AfterFunc(a.after, func() { a.confirm(ip, since) })
+			after := a.after
+			if g := a.gates.Load(); g != nil {
+				if d, ok := g.ArmAlertAfter(ip); ok {
+					after = d
+				}
+			}
+			s.timer = time.AfterFunc(after, func() { a.confirm(ip, since) })
 		}
 		return
 	}

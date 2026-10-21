@@ -20,6 +20,8 @@ type GateConfig struct {
 	ArmIP      string   `json:"arm_ip,omitempty"`     // arm camera, for the broken arm alert; "": the overview camera sees the arm
 	PhotoLead  *float64 `json:"photo_lead,omitempty"` // seconds before the plate's capture for the overview photo; nil: overviewPhotoLead
 	PhotoAuto  bool     `json:"photo_auto,omitempty"` // pick the overview photo by content instead (photo.go)
+
+	ArmAlertAfter *float64 `json:"arm_alert_after,omitempty"` // seconds the arm must look broken before the alert; nil: armBrokenAfter
 }
 
 // ExitLaneConfig is one exit lane from the Exit Lanes table. Exit lanes have only cameras,
@@ -43,14 +45,15 @@ type GateDevice struct {
 type Gates struct {
 	byAccount map[string]string // RAM account, upper case -> gate name
 	byAddr    map[netip.Addr]GateDevice
-	leads     map[string]float64 // "<direction> <lane>" -> photo lead, where set
-	autos     map[string]bool    // "<direction> <lane>" -> photo picked by content
+	leads     map[string]float64       // "<direction> <lane>" -> photo lead, where set
+	autos     map[string]bool          // "<direction> <lane>" -> photo picked by content
+	armAfter  map[string]time.Duration // entrance lane -> its broken arm alert's wait, where set
 }
 
 // NewGates builds the index. WordPress checks the tables when they are saved; anything
 // that still doesn't fit (a bad address, a repeat) is logged and left out.
 func NewGates(entrances []GateConfig, exits []ExitLaneConfig) *Gates {
-	g := &Gates{byAccount: map[string]string{}, byAddr: map[netip.Addr]GateDevice{}, leads: map[string]float64{}, autos: map[string]bool{}}
+	g := &Gates{byAccount: map[string]string{}, byAddr: map[netip.Addr]GateDevice{}, leads: map[string]float64{}, autos: map[string]bool{}, armAfter: map[string]time.Duration{}}
 	for _, gate := range entrances {
 		name := strings.TrimSpace(gate.Name)
 		if name == "" {
@@ -68,6 +71,9 @@ func NewGates(entrances []GateConfig, exits []ExitLaneConfig) *Gates {
 			g.leads["entry "+name] = *gate.PhotoLead
 		}
 		g.autos["entry "+name] = gate.PhotoAuto
+		if gate.ArmAlertAfter != nil {
+			g.armAfter[name] = time.Duration(*gate.ArmAlertAfter * float64(time.Second))
+		}
 	}
 	for _, lane := range exits {
 		if name := strings.TrimSpace(lane.Name); name != "" {
@@ -145,6 +151,17 @@ func (g *Gates) Count() int {
 		lanes[d.Direction+" "+d.Gate] = true
 	}
 	return len(lanes)
+}
+
+// ArmAlertAfter returns how long the arm seen by a camera must look broken before the alert,
+// when the camera's entrance lane sets it.
+func (g *Gates) ArmAlertAfter(ip string) (time.Duration, bool) {
+	d, ok := g.ForIP(ip)
+	if !ok || d.Direction != "entry" {
+		return 0, false
+	}
+	after, ok := g.armAfter[d.Gate]
+	return after, ok
 }
 
 // OverviewLane is a lane's overview camera, and how long before a plate's capture its photo

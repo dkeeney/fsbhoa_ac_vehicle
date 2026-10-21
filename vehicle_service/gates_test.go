@@ -100,3 +100,19 @@ func TestOverviewCamerasLead(t *testing.T) {
 		t.Errorf("cameras: %+v", cams)
 	}
 }
+
+func TestArmAlertAfter(t *testing.T) {
+	wait := 240.0
+	g := NewGates(
+		[]GateConfig{{Name: "South Enter", OverviewIP: "192.168.107.141"}, {Name: "North Enter", OverviewIP: "192.168.107.10", ArmIP: "192.168.107.11", ArmAlertAfter: &wait}},
+		[]ExitLaneConfig{{Name: "North Exit", OverviewIP: "192.168.107.12"}},
+	)
+	if d, ok := g.ArmAlertAfter("192.168.107.11"); !ok || d != 4*time.Minute {
+		t.Errorf("North Enter's arm camera: %v %v, want 4m", d, ok)
+	}
+	for _, ip := range []string{"192.168.107.141", "192.168.107.12", "192.0.2.1"} {
+		if d, ok := g.ArmAlertAfter(ip); ok {
+			t.Errorf("%s: %v, want the default", ip, d)
+		}
+	}
+}
