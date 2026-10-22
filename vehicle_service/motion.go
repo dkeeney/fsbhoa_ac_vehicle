@@ -52,6 +52,8 @@ type MotionRegion struct {
 	// the white arm against the hedge when it's up; each change is journaled. "bar" is the
 	// same, but on while a share of it is a bright bar, brighter than the picture just above
 	// and below it (the lowered arm across the pavers), so sun on the pavers doesn't count.
+	// "red" is on while enough of it is red (the raised arm's red stripes against grass and
+	// curb), or, in a frame without color (infrared at night), while it is a "bar".
 	Kind string `json:"kind,omitempty"`
 }
 
@@ -68,6 +70,17 @@ const (
 	brightSettleFrames = 2    // a "bright" region changes state after this many frames agree
 	barContrast        = 40   // a "bar" region's averaged pixel is bar when this much brighter (of 255) than the ones above and below it
 	barOffset          = 4.4  // and those are this far away, in percent of the picture's height (16 px of 360: past the arm's width)
+	// A "red" region's pixel is red when its red is at least redMin and redOverGreen and
+	// redOverBlue more than its green and blue: the raised arm's stripes on .141 are a dark red,
+	// about (85, 35, 40), at midday (2026-10-22). On .141's full-size frames of 11:09 to 12:30
+	// the box on the raised arm (0 50 8 90) was 2 to 3% red with the arm up (down to 0.2% when
+	// dim) and never had a red pixel with the arm down (232 frames, all with a car passing). Its
+	// brightness alone didn't separate them at midday, with the sun behind the arm.
+	redMin, redOverGreen, redOverBlue = 50, 30, 22
+	redOnShare                        = 0.002
+	// A frame is without color (a camera in infrared at night) when its mean chroma, |Cb-128| +
+	// |Cr-128|, is below this: .141 in daylight 5.5 to 9 (2026-10-22), at night 0.
+	colorlessChroma    = 3
 	barOnShare         = 0.10 // a "bar" region is on at this share (the arm down on .141, 2026-10-20: 0.29 to 0.36 at its pivot, 0.18 to 0.27 at its tip; up, 0 to 0.03)
 	motionQuietFrames  = 3    // a region's motion ends after this many still frames
 	motionPreroll      = 3    // frames kept from before the first motion
@@ -452,6 +465,14 @@ func (d *motionDetector) brightStates(t time.Time, img image.Image) []brightChan
 		case "bar":
 			share = barShare(img, r.MotionRegion)
 			on = share >= barOnShare
+		case "red":
+			if colorless(img) {
+				share = barShare(img, r.MotionRegion)
+				on = share >= barOnShare
+			} else {
+				share = redShare(img, r.MotionRegion)
+				on = share >= redOnShare
+			}
 		default:
 			continue
 		}
@@ -465,6 +486,47 @@ func (d *motionDetector) brightStates(t time.Time, img image.Image) []brightChan
 		}
 	}
 	return changes
+}
+
+// redShare is the share of a region's pixels that are red (redMin, redOverGreen, redOverBlue).
+func redShare(img image.Image, r MotionRegion) float64 {
+	b := img.Bounds()
+	x0, x1 := b.Min.X+int(r.Left/100*float64(b.Dx())), b.Min.X+int(r.Right/100*float64(b.Dx()))
+	y0, y1 := b.Min.Y+int(r.Top/100*float64(b.Dy())), b.Min.Y+int(r.Bottom/100*float64(b.Dy()))
+	n, red := 0, 0
+	for y := y0; y < y1; y++ {
+		for x := x0; x < x1; x++ {
+			cr, cg, cb, _ := img.At(x, y).RGBA()
+			R, G, B := int(cr>>8), int(cg>>8), int(cb>>8)
+			n++
+			if R >= redMin && R-G >= redOverGreen && R-B >= redOverBlue {
+				red++
+			}
+		}
+	}
+	if n == 0 {
+		return 0
+	}
+	return float64(red) / float64(n)
+}
+
+// colorless reports whether a frame has no color, as a camera in infrared gives at night: its
+// mean chroma, sampled, is below colorlessChroma, or it is a grayscale JPEG.
+func colorless(img image.Image) bool {
+	if _, gray := img.(*image.Gray); gray {
+		return true
+	}
+	ycc, ok := img.(*image.YCbCr)
+	if !ok {
+		return false
+	}
+	sum, n := 0, 0
+	for i := 0; i < len(ycc.Cb) && i < len(ycc.Cr); i += 16 {
+		cb, cr := int(ycc.Cb[i])-128, int(ycc.Cr[i])-128
+		sum += max(cb, -cb) + max(cr, -cr)
+		n++
+	}
+	return n > 0 && sum < colorlessChroma*n
 }
 
 // brightShare is the share of a region's brightScale x brightScale averages that are at

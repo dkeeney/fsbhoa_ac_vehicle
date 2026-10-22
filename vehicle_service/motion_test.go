@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"image"
+	"image/color"
 	"image/jpeg"
 	"os"
 	"path/filepath"
@@ -277,5 +278,41 @@ func TestBarRegionSteep(t *testing.T) {
 	}
 	if s := barShare(img, r); s < barOnShare {
 		t.Errorf("an upright arm: share %v, want at least %v", s, barOnShare)
+	}
+}
+
+// A "red" region: red stripes on grass count; grass, grey and a colorless (infrared) frame don't.
+func TestRedRegion(t *testing.T) {
+	r := MotionRegion{Left: 0, Top: 0, Right: 50, Bottom: 100}
+	frame := func(c color.RGBA) *image.YCbCr {
+		rgba := image.NewRGBA(image.Rect(0, 0, 64, 36))
+		for y := 0; y < 36; y++ {
+			for x := 0; x < 64; x++ {
+				rgba.Set(x, y, color.RGBA{60, 110, 40, 255}) // grass
+				if x < 32 && y%12 < 6 {
+					rgba.Set(x, y, c) // stripes
+				}
+			}
+		}
+		var buf bytes.Buffer
+		jpeg.Encode(&buf, rgba, &jpeg.Options{Quality: 95})
+		img, _ := jpeg.Decode(&buf)
+		return img.(*image.YCbCr)
+	}
+	if s := redShare(frame(color.RGBA{85, 35, 40, 255}), r); s < 0.05 {
+		t.Errorf("dark red stripes: share %v, want about 0.5", s)
+	}
+	if s := redShare(frame(color.RGBA{140, 140, 140, 255}), r); s != 0 {
+		t.Errorf("grey stripes: share %v, want 0", s)
+	}
+	if colorless(frame(color.RGBA{85, 35, 40, 255})) {
+		t.Error("a color frame read as colorless")
+	}
+	gray := image.NewGray(image.Rect(0, 0, 64, 36))
+	var buf bytes.Buffer
+	jpeg.Encode(&buf, gray, nil)
+	img, _ := jpeg.Decode(&buf)
+	if !colorless(img) {
+		t.Error("a gray frame read as in color")
 	}
 }
