@@ -482,10 +482,12 @@ class FSBHOA_Vehicle_Settings {
 	 * corners in percent of the picture, then optionally "on=<share>" (the share of the zone
 	 * that must differ for it to be full, 0.02 to 0.9; default 0.30) and, on an approach line,
 	 * "window=<seconds>" (how long after leaving "approach" a car may reach "beyond", 2 to 60;
-	 * default 8). A camera counts cars only with both zones. A line that doesn't fit is
+	 * default 8) and, on a beyond line, "plate=<seconds>" (how long after a car enters "beyond"
+	 * its plate read may be captured, 2 to 60; a car with no read is journaled, and sent with
+	 * the plate reads). A camera counts cars only with both zones. A line that doesn't fit is
 	 * dropped with a message.
 	 *
-	 * @return array[] camera, zone, points (array of array( x, y )), and on and window when given
+	 * @return array[] camera, zone, points (array of array( x, y )), and on, window and plate when given
 	 */
 	private function sanitize_count_zones( $text, $options ) {
 		if ( is_array( $text ) ) { // already parsed (an option saved before)
@@ -512,13 +514,13 @@ class FSBHOA_Vehicle_Settings {
 			$parts  = preg_split( '/\s+/', $line );
 			$coords = array_slice( $parts, 2 );
 			$error  = '';
-			// Options after the corners: on=<share>, window=<seconds> (approach only)
+			// Options after the corners: on=<share>, window=<seconds> (approach only), plate=<seconds> (beyond only)
 			$extra = array();
 			while ( $coords && false !== strpos( end( $coords ), '=' ) ) {
 				list( $key, $value ) = explode( '=', array_pop( $coords ), 2 );
-				$limits = array( 'on' => array( 0.02, 0.9 ), 'window' => array( 2, 60 ) );
+				$limits = array( 'on' => array( 0.02, 0.9 ), 'window' => array( 2, 60 ), 'plate' => array( 2, 60 ) );
 				if ( ! isset( $limits[ $key ] ) || isset( $extra[ $key ] ) ) {
-					$error = __( 'the options after the corners are on=<share> and window=<seconds>', 'fsbhoa-ac-vehicle' );
+					$error = __( 'the options after the corners are on=<share>, window=<seconds> and plate=<seconds>', 'fsbhoa-ac-vehicle' );
 				} elseif ( ! is_numeric( $value ) || $value < $limits[ $key ][0] || $value > $limits[ $key ][1] ) {
 					/* translators: 1: option name, 2: lowest value, 3: highest value */
 					$error = sprintf( __( '%1$s must be from %2$s to %3$s', 'fsbhoa-ac-vehicle' ), $key, $limits[ $key ][0], $limits[ $key ][1] );
@@ -528,6 +530,9 @@ class FSBHOA_Vehicle_Settings {
 			}
 			if ( isset( $extra['window'] ) && 'approach' !== ( $parts[1] ?? '' ) ) {
 				$error = __( 'window= goes on the approach line', 'fsbhoa-ac-vehicle' );
+			}
+			if ( isset( $extra['plate'] ) && 'beyond' !== ( $parts[1] ?? '' ) ) {
+				$error = __( 'plate= goes on the beyond line', 'fsbhoa-ac-vehicle' );
 			}
 			if ( '' !== $error ) {
 				// reported below
@@ -600,7 +605,7 @@ class FSBHOA_Vehicle_Settings {
 				$words[] = $p[0];
 				$words[] = $p[1];
 			}
-			foreach ( array( 'on', 'window' ) as $key ) {
+			foreach ( array( 'on', 'window', 'plate' ) as $key ) {
 				if ( isset( $z[ $key ] ) ) {
 					$words[] = $key . '=' . $z[ $key ];
 				}
@@ -958,7 +963,7 @@ class FSBHOA_Vehicle_Settings {
 				 class="large-text code"
 				 placeholder="192.168.107.141 approach 18 100 30 62 42 45 70 45 66 63 40 100"><?php echo esc_textarea( self::count_zones_text( $options['count_zones'] ?? array() ) ); ?></textarea>
 		<p class="description">
-			<?php esc_html_e( 'Two areas of a lane\'s overview camera that vehicle_service counts cars with, one a line: the camera\'s address, "approach" (the lane just before the arm) or "beyond" (past the arm, where a car has come in), then the corners of the area, each an x and a y in percent of the picture\'s width and height (3 to 12 corners). A car is counted when "beyond" fills after "approach" did; a car that leaves "approach" without reaching "beyond" backed out. After the corners, on=<share> sets how much of a zone must change for it to count as full (default 0.30; lower for a zone a car fills only partly, such as a distant keypad), and window=<seconds> on the approach line how long a car may take from "approach" to "beyond" (default 8; longer where cars wait for a swing gate between them). Each is recorded in the journal. It uses the frames kept for the overview photos, twice a second. Applied without a restart.', 'fsbhoa-ac-vehicle' ); ?>
+			<?php esc_html_e( 'Two areas of a lane\'s overview camera that vehicle_service counts cars with, one a line: the camera\'s address, "approach" (the lane just before the arm) or "beyond" (past the arm, where a car has come in), then the corners of the area, each an x and a y in percent of the picture\'s width and height (3 to 12 corners). A car is counted when "beyond" fills after "approach" did; a car that leaves "approach" without reaching "beyond" backed out. After the corners, on=<share> sets how much of a zone must change for it to count as full (default 0.30; lower for a zone a car fills only partly, such as a distant keypad), and window=<seconds> on the approach line how long a car may take from "approach" to "beyond" (default 8; longer where cars wait for a swing gate between them). plate=<seconds> on the beyond line checks each car against the lane\'s plate reads: a car with no read captured from 5 seconds before it entered "beyond" to that many seconds after is recorded as "no plate read" and, with Plate Read Events on, sent to the monitor with the overview photo. Use it only where that time is steady (South Enter: plate=10), not where cars wait for a swing gate after "beyond". Each is recorded in the journal. It uses the frames kept for the overview photos, twice a second. Applied without a restart.', 'fsbhoa-ac-vehicle' ); ?>
 		</p>
 		<?php
 	}

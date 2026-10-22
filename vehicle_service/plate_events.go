@@ -153,6 +153,57 @@ func (p *PlateEvents) Send(r PlateRead) bool {
 	return true
 }
 
+// unreadPhotoBefore: an unread car's photo is the frame this long before it entered "beyond".
+// A plate read's photo is overviewPhotoLead (4 s) before its capture, which is about 3.5 s
+// after the car enters "beyond" at South Enter (2026-10-21 and 22).
+const unreadPhotoBefore = 500 * time.Millisecond
+
+// SendUnread queues a car that came in with no plate read (unread.go) as a vehicle event with
+// no plate and only the overview photo, when the setting is on, so the monitor has an entry
+// for it too (core's card says "NO PLATE READ" for an entry without a plate or plate photos).
+func (p *PlateEvents) SendUnread(c unreadCar) bool {
+	if !p.enabled.Load() {
+		return false
+	}
+	details := map[string]interface{}{
+		"source":         "count_only", // a car counted by the overview camera, not read by the LPR camera
+		"no_plate_read":  true,
+		"camera_ip":      c.camera,
+		"direction":      "entry",
+		"approach_start": c.approach.Format(time.RFC3339Nano),
+		"beyond_start":   c.start.Format(time.RFC3339Nano),
+		"beyond_end":     c.end.Format(time.RFC3339Nano),
+		"source_host":    hostname,
+	}
+	var overview []byte
+	if p.photos != nil {
+		var at time.Time
+		if overview, at = p.photos.Near(c.camera, c.start.Add(-unreadPhotoBefore)); overview != nil {
+			details["overview_photo_at"] = at.Format(time.RFC3339Nano)
+		}
+	}
+	uid := "unread_" + c.camera + "_" + c.start.Local().Format("20060102-150405.000")
+	payload, err := json.Marshal(map[string]interface{}{
+		"event_uid":          uid,
+		"event_timestamp":    c.start.Local().Format("2006-01-02 15:04:05.000"),
+		"gate_identifier":    c.gate,
+		"direction":          "entry",
+		"lpr_plate":          "",
+		"overview_image_b64": b64(overview),
+		"raw_details":        details,
+	})
+	if err != nil {
+		log.Printf("[ERROR] Unread car event JSON: %v", err)
+		return false
+	}
+	if err := p.dispatcher.Enqueue(uid, payload); err != nil {
+		log.Printf("[ERROR] Could not queue unread car event %s: %v", uid, err)
+		return false
+	}
+	log.Printf("[DISPATCH] Unread car event %s: %s", uid, c.gate)
+	return true
+}
+
 // b64 returns a photo base64-encoded; "" if there is none.
 func b64(data []byte) string {
 	if len(data) == 0 {

@@ -28,6 +28,7 @@ type CarCounter struct {
 	journal *Journal
 	debugf  func(string, ...interface{})
 	gates   atomic.Pointer[Gates]
+	unread  *UnreadCars // cars with no plate read, for cameras with plate=; nil: none
 }
 
 // CountZone is one zone of one camera's picture: a polygon in percent of its width and height.
@@ -37,6 +38,7 @@ type CountZone struct {
 	Points [][2]float64 `json:"points"`
 	On     float64      `json:"on,omitempty"`     // the zone is full at this share; 0: countOnShare (empty at half)
 	Window float64      `json:"window,omitempty"` // approach only: seconds a car may take to reach "beyond"; 0: countApproachWindow
+	Plate  float64      `json:"plate,omitempty"`  // beyond only: seconds after a car enters "beyond" its plate read may be captured; 0: no check (unread.go)
 }
 
 const (
@@ -53,6 +55,9 @@ const (
 func NewCarCounter(journal *Journal, debugf func(string, ...interface{})) *CarCounter {
 	return &CarCounter{cameras: map[string]*zoneCounter{}, journal: journal, debugf: debugf}
 }
+
+// SetUnread sets where counted cars go to be matched with plate reads. Call before frames arrive.
+func (c *CarCounter) SetUnread(u *UnreadCars) { c.unread = u }
 
 // SetGates gives the lanes, so each count is journaled with its camera's lane.
 func (c *CarCounter) SetGates(g *Gates) { c.gates.Store(g) }
@@ -99,7 +104,7 @@ func (c *CarCounter) SetZones(zones []CountZone) {
 
 func sameZones(z map[string]CountZone, approach, beyond CountZone) bool {
 	eq := func(a, b CountZone) bool {
-		if len(a.Points) != len(b.Points) || a.On != b.On || a.Window != b.Window {
+		if len(a.Points) != len(b.Points) || a.On != b.On || a.Window != b.Window || a.Plate != b.Plate {
 			return false
 		}
 		for i := range a.Points {
@@ -134,14 +139,19 @@ func (c *CarCounter) HandleFrame(ip string, f photoFrame) {
 		return
 	}
 	for _, e := range zc.step(f.at, countGray(img)) {
+		var lane GateDevice
 		if g := c.gates.Load(); g != nil {
 			if d, ok := g.ForIP(ip); ok {
+				lane = d
 				e.data["gate"], e.data["direction"] = d.Gate, d.Direction
 			}
 		}
 		e.data["camera_ip"] = ip
 		c.journal.Write(e.kind, e.data)
 		log.Printf("[COUNT] %s: %s %v", ip, e.kind, e.data["beyond_start"])
+		if e.kind == "car" && c.unread != nil && zc.beyondZone.Plate > 0 && lane.Gate != "" && lane.Direction == "entry" {
+			c.unread.Car(ip, lane.Gate, e.approach, e.start, e.end, time.Duration(zc.beyondZone.Plate*float64(time.Second)))
+		}
 	}
 }
 
@@ -167,8 +177,9 @@ type zoneCounter struct {
 }
 
 type countEvent struct {
-	kind string
-	data map[string]interface{}
+	kind                 string
+	data                 map[string]interface{}
+	approach, start, end time.Time // a car: "approach" filled, "beyond" filled and emptied
 }
 
 func (z *zoneCounter) step(t time.Time, g []uint8) []countEvent {
@@ -222,11 +233,13 @@ func (z *zoneCounter) step(t time.Time, g []uint8) []countEvent {
 			"beyond_end":   ts(t),
 			"beyond_peak":  math.Round(z.beyondPeak*100) / 100,
 		}
+		e := countEvent{kind: kind, data: data}
 		if z.beyondFromApproach {
-			kind = "car"
+			e.kind = "car"
 			data["approach_start"] = ts(z.approachStart)
+			e.approach, e.start, e.end = z.approachStart, z.beyondStart, t
 		}
-		events = append(events, countEvent{kind, data})
+		events = append(events, e)
 	}
 	if a < z.aOn/2 && z.approachOn {
 		z.approachOn = false
@@ -236,7 +249,7 @@ func (z *zoneCounter) step(t time.Time, g []uint8) []countEvent {
 	}
 	if z.backedPending && t.Sub(z.approachLast) > z.window {
 		z.backedPending = false
-		events = append(events, countEvent{"car_backed", map[string]interface{}{
+		events = append(events, countEvent{kind: "car_backed", data: map[string]interface{}{
 			"approach_start": ts(z.approachStart),
 			"approach_end":   ts(z.approachLast),
 			"approach_peak":  math.Round(z.apprPeak*100) / 100,

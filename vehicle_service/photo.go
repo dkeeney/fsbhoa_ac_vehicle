@@ -151,15 +151,35 @@ func (o *OverviewPhotos) ForRead(lane, direction string, capture time.Time) ([]b
 		log.Printf("[PHOTO] No overview frame from %s near %s for %s %s", ip, capture.Format("15:04:05.000"), direction, lane)
 		return nil, time.Time{}
 	}
-	data := f.data
+	return sendable(ip, f.data), f.at
+}
+
+// Near returns a camera's kept frame nearest t, ready to send, and the time it was taken; nil
+// if the camera isn't watched or no frame is within overviewPhotoMaxGap.
+func (o *OverviewPhotos) Near(ip string, t time.Time) ([]byte, time.Time) {
+	o.mu.Lock()
+	w := o.watches[ip]
+	o.mu.Unlock()
+	if w == nil {
+		return nil, time.Time{}
+	}
+	f, ok := w.nearest(t)
+	if !ok {
+		log.Printf("[PHOTO] No overview frame from %s near %s", ip, t.Format("15:04:05.000"))
+		return nil, time.Time{}
+	}
+	return sendable(ip, f.data), f.at
+}
+
+// sendable halves a frame wider than overviewPhotoMaxWidth (the Speco cameras' 1920 x 1080).
+func sendable(ip string, data []byte) []byte {
 	if c, err := jpeg.DecodeConfig(bytes.NewReader(data)); err == nil && c.Width > overviewPhotoMaxWidth {
 		if small, err := shrinkJPEG(data, 2, overviewPhotoQuality); err == nil {
-			data = small
-		} else {
-			log.Printf("[WARN] Overview photo from %s: cannot shrink (%v); sending it as it is", ip, err)
+			return small
 		}
+		log.Printf("[WARN] Overview photo from %s: cannot shrink; sending it as it is", ip)
 	}
-	return data, f.at
+	return data
 }
 
 // Latest returns the newest frame from a camera, and whether the camera is watched at all.

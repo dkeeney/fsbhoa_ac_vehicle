@@ -57,6 +57,7 @@ type LPRDrop struct {
 	cameraWait time.Duration
 	gates      atomic.Pointer[Gates]
 	events     *PlateEvents // sends reads to the vehicle log when that setting is on; may be nil
+	unread     *UnreadCars  // matches reads with counted cars; may be nil
 
 	mu      sync.Mutex
 	cameras map[string]lprCamera // by MAC folder name, learned from the hourly summaries
@@ -103,6 +104,11 @@ func (d *LPRDrop) SetGates(g *Gates) {
 // SetEvents sets where reads are sent as vehicle events. Call before Run.
 func (d *LPRDrop) SetEvents(p *PlateEvents) {
 	d.events = p
+}
+
+// SetUnread sets where reads go to be matched with the cars counted at their lane. Call before Run.
+func (d *LPRDrop) SetUnread(u *UnreadCars) {
+	d.unread = u
 }
 
 // Run watches the folder and every folder the cameras create in it. Files already there
@@ -322,6 +328,11 @@ func (d *LPRDrop) journalRead(key string, r *lprRead) {
 	d.tagCamera(entry, r.camera)
 	d.journal.Write("plate", entry)
 	log.Printf("[LPR] Read at %v: plate %q from %s (capture %s)", entry["gate"], r.plate, r.camera, entry["capture_time"])
+	if gate, _ := entry["gate"].(string); gate != "" && d.unread != nil {
+		if capture, err := time.ParseInLocation("2006-01-02 15:04:05.000", lprCaptureTimeText(r.captureTime), time.Local); err == nil {
+			d.unread.Read(gate, capture)
+		}
+	}
 
 	if d.events != nil {
 		read := PlateRead{

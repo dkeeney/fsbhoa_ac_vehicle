@@ -223,6 +223,12 @@ func main() {
 	carCounter := NewCarCounter(journal, gsm.debugf)
 	overviewPhotos.SetFrameHandler(carCounter.HandleFrame)
 	lprDrop.SetEvents(plateEvents)
+	// Counted cars with no plate read (cameras whose "beyond" zone has plate=): journaled, and
+	// sent with the plate reads when "plate_events" is on
+	unreadCars := NewUnreadCars(journal)
+	unreadCars.SetSend(func(c unreadCar) { plateEvents.SendUnread(c) })
+	carCounter.SetUnread(unreadCars)
+	lprDrop.SetUnread(unreadCars)
 	go lprDrop.Run()
 
 	// Motion in the overview and keypad cameras' regions, from their snapshots: journaled,
