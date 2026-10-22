@@ -64,6 +64,16 @@ func TestCountCarBacked(t *testing.T) {
 	}
 }
 
+// A car that reaches into "beyond" at the arm and reverses (2026-10-22 13:08) backed out: it
+// leaves "beyond" toward "approach", not out the far side.
+func TestCountCarWentBack(t *testing.T) {
+	rows := [][2]int{{0, 20}, {5, 40}, {20, 70}, {30, 75}, {30, 75}, {20, 62}, {10, 52}, {0, 20}}
+	rows = append(rows, make([][2]int, 20)...)
+	if got := runCounter(newTestCounter(), rows); got["car_backed"] != 1 || len(got) != 1 {
+		t.Fatalf("counted %v, want one car backed out", got)
+	}
+}
+
 // A car that waits between the zones (North Enter: the keypad, then the swing gate) is still
 // a car in when its zone's window covers the wait.
 func TestCountSlowCarWithWindow(t *testing.T) {

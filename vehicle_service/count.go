@@ -53,6 +53,11 @@ const (
 	countBackground         = 20      // frames in the background's median (every other frame: the last 20 s)
 	countWarmup             = 10      // frames before counting starts
 	countApproachWindow     = 8 * time.Second
+	// A car whose part in "beyond" ends this much nearer "approach" (in pixels of countWidth x
+	// countHeight) than where it entered went back: it reached the arm and reversed (2026-10-22
+	// 13:08, an SUV: in "beyond" its center went 115 to 101 across as it backed to the keypad,
+	// where a car going in leaves at the far side, 99 to 149).
+	countWentBack = 4
 
 	autoWidth, autoHeight = 96, 54 // the overview photo's "auto" pick compares frames at this size
 )
@@ -181,7 +186,7 @@ func (c *CarCounter) classify(ip string, e countEvent) countEvent {
 			e.data["gate"], e.data["direction"] = d.Gate, d.Direction
 		}
 	}
-	if e.kind == "beyond_only" && lane.Direction == "entry" && c.armUp != nil && c.armUp(lane.Gate, e.start) {
+	if e.kind == "beyond_only" && e.data["went_back"] == nil && lane.Direction == "entry" && c.armUp != nil && c.armUp(lane.Gate, e.start) {
 		e.kind, e.approach = "car", e.start
 		e.data["arm_up"] = true
 	}
@@ -208,6 +213,9 @@ type zoneCounter struct {
 	beyondStart          time.Time
 	beyondFromApproach   bool
 	beyondPeak, apprPeak float64
+	approachCenter       [2]float64 // the middle of "approach"; set on the first frame
+	beyondFirst          float64    // how far from approachCenter the "beyond" part was when it filled
+	beyondLast           float64    // and the last time it was full
 }
 
 type countEvent struct {
@@ -232,6 +240,9 @@ func (z *zoneCounter) step(t time.Time, g []uint8) []countEvent {
 		return nil // the camera changed its exposure: the whole picture differs, not a car
 	}
 	a, b := zoneShares(g, bg, z.approach, z.beyond)
+	if z.approachCenter == [2]float64{} {
+		z.approachCenter = maskCenter(z.approach)
+	}
 	var events []countEvent
 	ts := func(t time.Time) string { return t.Local().Format(journalTimeFormat) }
 
@@ -255,6 +266,8 @@ func (z *zoneCounter) step(t time.Time, g []uint8) []countEvent {
 	}
 	if b >= z.bOn && !z.beyondOn {
 		z.beyondOn, z.beyondStart, z.beyondPeak = true, t, 0
+		z.beyondFirst = z.beyondDistance(g, bg)
+		z.beyondLast = z.beyondFirst
 		// After an approach: a car came in. Without one: something else (a pedestrian, a
 		// shadow, or a car backing out through the gate)
 		z.beyondFromApproach = z.approachOn || (!z.approachLast.IsZero() && t.Sub(z.approachLast) <= z.window)
@@ -264,6 +277,9 @@ func (z *zoneCounter) step(t time.Time, g []uint8) []countEvent {
 	}
 	if z.beyondOn {
 		z.beyondPeak = math.Max(z.beyondPeak, b)
+		if b >= z.bOn/2 {
+			z.beyondLast = z.beyondDistance(g, bg)
+		}
 	}
 	if b < z.bOn/2 && z.beyondOn {
 		z.beyondOn = false
@@ -274,7 +290,14 @@ func (z *zoneCounter) step(t time.Time, g []uint8) []countEvent {
 			"beyond_peak":  math.Round(z.beyondPeak*100) / 100,
 		}
 		e := countEvent{kind: kind, data: data, start: z.beyondStart, end: t}
-		if z.beyondFromApproach {
+		if z.beyondLast < z.beyondFirst-countWentBack {
+			// It left "beyond" back toward the arm: it reached the arm and reversed
+			data["went_back"] = true
+			if z.beyondFromApproach {
+				e.kind = "car_backed"
+				data["approach_start"] = ts(z.approachStart)
+			}
+		} else if z.beyondFromApproach {
 			e.kind = "car"
 			data["approach_start"] = ts(z.approachStart)
 			e.approach, e.start, e.end = z.approachStart, z.beyondStart, t
@@ -296,6 +319,47 @@ func (z *zoneCounter) step(t time.Time, g []uint8) []countEvent {
 		}})
 	}
 	return events
+}
+
+// beyondDistance is how far the middle of what differs in "beyond" is from the middle of
+// "approach", in pixels; 0 when nothing differs.
+func (z *zoneCounter) beyondDistance(g, bg []uint8) float64 {
+	diff := make([]int, len(g))
+	sorted := make([]int, len(g))
+	for i := range g {
+		diff[i] = int(g[i]) - int(bg[i])
+		sorted[i] = diff[i]
+	}
+	sort.Ints(sorted)
+	typical := sorted[len(sorted)/2]
+	var sx, sy, n float64
+	for i, in := range z.beyond {
+		if d := diff[i] - typical; in && (d > countPixelDiff || d < -countPixelDiff) {
+			sx += float64(i % countWidth)
+			sy += float64(i / countWidth)
+			n++
+		}
+	}
+	if n == 0 {
+		return 0
+	}
+	return math.Hypot(sx/n-z.approachCenter[0], sy/n-z.approachCenter[1])
+}
+
+// maskCenter is the middle of a mask's pixels.
+func maskCenter(m []bool) [2]float64 {
+	var sx, sy, n float64
+	for i, in := range m {
+		if in {
+			sx += float64(i % countWidth)
+			sy += float64(i / countWidth)
+			n++
+		}
+	}
+	if n == 0 {
+		return [2]float64{}
+	}
+	return [2]float64{sx / n, sy / n}
 }
 
 // countGray reduces a frame to countWidth x countHeight brightness.
