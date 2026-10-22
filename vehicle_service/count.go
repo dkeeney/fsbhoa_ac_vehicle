@@ -29,6 +29,9 @@ type CarCounter struct {
 	debugf  func(string, ...interface{})
 	gates   atomic.Pointer[Gates]
 	unread  *UnreadCars // cars with no plate read, for cameras with plate=; nil: none
+	// The lane's arm, told of each car through it: returns a note for the car's card and its
+	// photo (an arm already up). nil: none
+	arm func(gate string, at time.Time) (string, []byte)
 }
 
 // CountZone is one zone of one camera's picture: a polygon in percent of its width and height.
@@ -55,6 +58,9 @@ const (
 func NewCarCounter(journal *Journal, debugf func(string, ...interface{})) *CarCounter {
 	return &CarCounter{cameras: map[string]*zoneCounter{}, journal: journal, debugf: debugf}
 }
+
+// SetArm sets what each counted car is reported to (ArmAlerts.CarCrossed). Call before frames arrive.
+func (c *CarCounter) SetArm(arm func(gate string, at time.Time) (string, []byte)) { c.arm = arm }
 
 // SetUnread sets where counted cars go to be matched with plate reads. Call before frames arrive.
 func (c *CarCounter) SetUnread(u *UnreadCars) { c.unread = u }
@@ -149,8 +155,16 @@ func (c *CarCounter) HandleFrame(ip string, f photoFrame) {
 		e.data["camera_ip"] = ip
 		c.journal.Write(e.kind, e.data)
 		log.Printf("[COUNT] %s: %s %v", ip, e.kind, e.data["beyond_start"])
-		if e.kind == "car" && c.unread != nil && zc.beyondZone.Plate > 0 && lane.Gate != "" && lane.Direction == "entry" {
-			c.unread.Car(ip, lane.Gate, e.approach, e.start, e.end, time.Duration(zc.beyondZone.Plate*float64(time.Second)))
+		if e.kind != "car" || lane.Gate == "" || lane.Direction != "entry" {
+			continue
+		}
+		var note string
+		var notePhoto []byte
+		if c.arm != nil {
+			note, notePhoto = c.arm(lane.Gate, e.start)
+		}
+		if c.unread != nil && zc.beyondZone.Plate > 0 {
+			c.unread.Car(ip, lane.Gate, e.approach, e.start, e.end, time.Duration(zc.beyondZone.Plate*float64(time.Second)), note, notePhoto)
 		}
 	}
 }

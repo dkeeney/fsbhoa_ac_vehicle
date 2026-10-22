@@ -30,7 +30,9 @@ type unreadCar struct {
 	camera, gate         string
 	approach, start, end time.Time // "approach" filled, "beyond" filled and emptied
 	after                time.Duration
-	done                 bool // read, or reported as unread
+	done                 bool   // read, or reported as unread
+	note                 string // for its card, such as "Arm already up 2 min 56 s" (ArmAlerts.CarCrossed)
+	notePhoto            []byte // goes with the note
 }
 
 type unreadLane struct {
@@ -74,8 +76,10 @@ func (c *unreadCar) matches(capture time.Time) bool {
 	return d >= -unreadPlateBefore && d <= c.after
 }
 
-// Car takes a car counted into a lane by one of its cameras whose "beyond" zone has plate=.
-func (u *UnreadCars) Car(camera, gate string, approach, start, end time.Time, after time.Duration) {
+// Car takes a car counted into a lane by one of its cameras whose "beyond" zone has plate=,
+// with the note for its card, if any. The note goes with its read (Read), or with the car
+// when it has none; a read that arrived before the car was counted is already sent without it.
+func (u *UnreadCars) Car(camera, gate string, approach, start, end time.Time, after time.Duration, note string, notePhoto []byte) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	l := u.lane(gate)
@@ -85,7 +89,7 @@ func (u *UnreadCars) Car(camera, gate string, approach, start, end time.Time, af
 		}
 		return
 	}
-	c := &unreadCar{camera: camera, gate: gate, approach: approach, start: start, end: end, after: after}
+	c := &unreadCar{camera: camera, gate: gate, approach: approach, start: start, end: end, after: after, note: note, notePhoto: notePhoto}
 	l.latest = c
 	// Its read may have arrived first
 	for i, r := range l.reads {
@@ -99,8 +103,9 @@ func (u *UnreadCars) Car(camera, gate string, approach, start, end time.Time, af
 	time.AfterFunc(time.Until(start.Add(after+u.settle)), func() { u.decide(c) })
 }
 
-// Read takes an LPR camera's read at a lane, by its capture time.
-func (u *UnreadCars) Read(gate string, capture time.Time) {
+// Read takes an LPR camera's read at a lane, by its capture time, and returns the note for
+// its card and the note's photo, when the read is a counted car's that has one.
+func (u *UnreadCars) Read(gate string, capture time.Time) (string, []byte) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	l := u.lane(gate)
@@ -108,7 +113,7 @@ func (u *UnreadCars) Read(gate string, capture time.Time) {
 		if c.matches(capture) {
 			c.done = true
 			l.cars = append(l.cars[:i], l.cars[i+1:]...)
-			return
+			return c.note, c.notePhoto
 		}
 	}
 	l.reads = append(l.reads, capture)
@@ -118,6 +123,7 @@ func (u *UnreadCars) Read(gate string, capture time.Time) {
 		drop++
 	}
 	l.reads = append(l.reads[:0:0], l.reads[drop:]...)
+	return "", nil
 }
 
 // decide reports a car whose window has passed without a read.

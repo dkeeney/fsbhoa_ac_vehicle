@@ -39,6 +39,8 @@ type PlateRead struct {
 	PlateArrived time.Time
 	SceneArrived time.Time
 	Missing      string // "plate" or "scene"
+	Note         string // for the card, such as "Arm already up 2 min 56 s"; "" for none
+	NotePhoto    []byte // goes with the note
 }
 
 // sceneShrink is how much the scene photo (2592 x 1520, about 1 MB) is reduced in each
@@ -139,6 +141,8 @@ func (p *PlateEvents) Send(r PlateRead) bool {
 		"lpr_image_b64":      fileB64(r.PlateFile, false),
 		"context_image_b64":  fileB64(r.SceneFile, true),
 		"overview_image_b64": b64(overview),
+		"event_note":         r.Note,
+		"note_image_b64":     b64(r.NotePhoto),
 		"raw_details":        details,
 	})
 	if err != nil {
@@ -190,6 +194,8 @@ func (p *PlateEvents) SendUnread(c unreadCar) bool {
 		"direction":          "entry",
 		"lpr_plate":          "",
 		"overview_image_b64": b64(overview),
+		"event_note":         c.note,
+		"note_image_b64":     b64(c.notePhoto),
 		"raw_details":        details,
 	})
 	if err != nil {

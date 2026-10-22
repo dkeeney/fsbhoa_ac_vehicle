@@ -328,9 +328,11 @@ func (d *LPRDrop) journalRead(key string, r *lprRead) {
 	d.tagCamera(entry, r.camera)
 	d.journal.Write("plate", entry)
 	log.Printf("[LPR] Read at %v: plate %q from %s (capture %s)", entry["gate"], r.plate, r.camera, entry["capture_time"])
+	var note string
+	var notePhoto []byte
 	if gate, _ := entry["gate"].(string); gate != "" && d.unread != nil {
 		if capture, err := time.ParseInLocation("2006-01-02 15:04:05.000", lprCaptureTimeText(r.captureTime), time.Local); err == nil {
-			d.unread.Read(gate, capture)
+			note, notePhoto = d.unread.Read(gate, capture)
 		}
 	}
 
@@ -338,6 +340,7 @@ func (d *LPRDrop) journalRead(key string, r *lprRead) {
 		read := PlateRead{
 			Camera: r.camera, Plate: plate, CaptureTime: r.captureTime,
 			PlateFile: r.plateFile, SceneFile: r.sceneFile, PlateArrived: r.plateAt, SceneArrived: r.sceneAt,
+			Note: note, NotePhoto: notePhoto,
 		}
 		read.CameraName, _ = entry["camera_name"].(string)
 		read.CameraIP, _ = entry["camera_ip"].(string)

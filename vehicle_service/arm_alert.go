@@ -36,7 +36,8 @@ type ArmAlerts struct {
 	gates      atomic.Pointer[Gates]
 	stateFile  string
 	heldFile   string
-	heldAfter  time.Duration
+	heldAfter  time.Duration                   // rule 3
+	heldCar    time.Duration                   // rule 2
 	snapshot   func(ip string) ([]byte, error) // the camera's own snapshot, when no frame is kept
 }
 
@@ -47,11 +48,22 @@ const (
 	armBrokenAfter  = 3 * time.Minute // the tip goes off about a second before the pivot each time the arm rises, and haze or a car can hide it for a minute or so (North Enter's .11, 2026-10-21)
 	armAlertStateFn = "arm_alerts.json"
 	armHeldKey      = "arm_held"
-	// An ordinary cycle is up 5 to 30 s; a driver who stops under the raised arm keeps it up
-	// longer (2026-10-20 and 21 at South Enter: three times about 3 minutes, one car each).
-	armHeldAfter   = 5 * time.Minute
-	armHeldStateFn = "arm_held.json"
-	armHeldStale   = 30 * time.Second // the camera's newest frame is older than this: it isn't watching the arm
+	// Rule 3: the arm up this long with no car through. A driver who stops under the raised
+	// arm keeps it up a while (2026-10-21 10:59 at South Enter: 2.4 minutes), and so does a
+	// cyclist's gate code, until the next car (08:12: 3 minutes).
+	armHeldAfter = 5 * time.Minute
+	// Rule 2: the arm still up this long after a car went through under it. At South Enter on
+	// 2026-10-21 and 22 (558 cars) the arm came down within 6 s of the car leaving "beyond" 500
+	// times and within 20 s all but twice (23 s, 87 s); a car following on its own tag keeps it
+	// up 10 to 20 s.
+	armHeldAfterCar = 30 * time.Second
+	// Rule 1: the first car through an arm that went up longer ago than this didn't open it.
+	// The first car through crossed within 20 s of the arm going up in 500 of 502 up periods.
+	armAlreadyUp    = 30 * time.Second
+	armHeldStateFn  = "arm_held.json"
+	armHeldStale    = 30 * time.Second // the camera's newest frame is older than this: it isn't watching the arm
+	armUpNoCarsText = "Arm up, no cars through"
+	armHeldText     = "Arm held up"
 )
 
 // enqueuer queues an event for the vehicle log (the Dispatcher).
@@ -66,8 +78,10 @@ type armState struct {
 	timer               *time.Timer // raises the alert once it has lasted armBrokenAfter
 	raisedSince         time.Time   // the alert is on, since; zero: off
 	upSince             time.Time   // the arm was last seen going up; zero: it is down (or not known)
-	heldTimer           *time.Timer // gives the held-up notice once the arm has been up armHeldAfter
+	heldTimer           *time.Timer // gives the held-up notice (rule 2 or 3)
 	heldSince           time.Time   // the held-up notice is on, since; zero: off
+	carThisUp           bool        // a car has gone through since the arm went up
+	opener              []byte      // the keypad camera's photo from when the arm went up
 }
 
 func NewArmAlerts(dispatcher enqueuer, journal *Journal, stateDir string) *ArmAlerts {
@@ -79,6 +93,7 @@ func NewArmAlerts(dispatcher enqueuer, journal *Journal, stateDir string) *ArmAl
 		stateFile:  filepath.Join(stateDir, armAlertStateFn),
 		heldFile:   filepath.Join(stateDir, armHeldStateFn),
 		heldAfter:  armHeldAfter,
+		heldCar:    armHeldAfterCar,
 		snapshot: func(ip string) ([]byte, error) {
 			return fetchSnapshot(&http.Client{Timeout: snapshotTimeout}, "http://"+ip+"/snapshot.JPG")
 		},
@@ -142,13 +157,17 @@ func (a *ArmAlerts) HandleState(ip, region string, on bool, at time.Time) {
 	}
 }
 
-// armHeld follows the arm going up and coming down, for the held-up notice (called with a.mu held).
+// armHeld follows the arm going up and coming down, for the held-up notice and the cars that
+// go through a raised arm (called with a.mu held).
 func (a *ArmAlerts) armHeld(ip string, s *armState, down bool, at time.Time) {
 	if !down {
-		if s.upSince.IsZero() && s.heldSince.IsZero() {
-			s.upSince = at
-			since := at
-			s.heldTimer = time.AfterFunc(a.heldAfter, func() { a.confirmHeld(ip, since) })
+		if s.upSince.IsZero() {
+			s.upSince, s.carThisUp, s.opener = at, false, nil
+			if s.heldSince.IsZero() {
+				since := at
+				s.heldTimer = time.AfterFunc(a.heldAfter, func() { a.confirmHeld(ip, since, armUpNoCarsText) })
+			}
+			go a.grabOpener(ip, at)
 		}
 		return
 	}
@@ -158,15 +177,97 @@ func (a *ArmAlerts) armHeld(ip string, s *armState, down bool, at time.Time) {
 		s.heldTimer = nil
 	}
 	if !s.heldSince.IsZero() {
-		text := "Arm down again (up " + heldFor(at.Sub(s.heldSince)) + ")"
+		text := "Arm down again (up " + upFor(at.Sub(s.heldSince)) + ")"
 		s.heldSince = time.Time{}
 		a.saveHeld()
 		go a.sendAlert(ip, armHeldKey, "arm_down_again", text, false, true, at)
 	}
 }
 
+// CarCrossed takes a car counted past a lane's arm (count.go), at the moment it entered
+// "beyond", and returns a note for its card and a photo to go with it, if any.
+//
+// Rule 1: the first car through an arm that went up more than armAlreadyUp before didn't
+// open it, so its note says "Arm already up 2 min 56 s", with the keypad camera's photo from
+// when the arm went up, showing who did. Seen 2026-10-21 08:12 at South Enter: a cyclist
+// entered a gate code, rode through unseen by the loops, and the arm stayed up until a car
+// went under it 3 minutes later. A driver who waited at the keypad looks the same; the photo
+// tells them apart.
+//
+// Rule 2: a car going through a raised arm starts the wait for the held-up notice over: the
+// arm still up heldCar later is held (Bingo night, or stuck up).
+func (a *ArmAlerts) CarCrossed(gate string, at time.Time) (string, []byte) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	ip, s := a.laneArm(gate)
+	if s == nil || s.upSince.IsZero() || at.Before(s.upSince) {
+		return "", nil
+	}
+	var note string
+	var photo []byte
+	if !s.carThisUp && at.Sub(s.upSince) > armAlreadyUp {
+		note, photo = "Arm already up "+upFor(at.Sub(s.upSince)), s.opener
+		a.journal.Write("arm_already_up", map[string]interface{}{
+			"camera_ip": ip, "gate": gate, "up_since": s.upSince.Local().Format(journalTimeFormat),
+			"car_at": at.Local().Format(journalTimeFormat), "opener_photo": photo != nil,
+		})
+		log.Printf("[ARM] %s: a car went through at %s under an arm already up since %s", gate, at.Local().Format("15:04:05"), s.upSince.Local().Format("15:04:05"))
+	}
+	s.carThisUp = true
+	if s.heldSince.IsZero() {
+		if s.heldTimer != nil {
+			s.heldTimer.Stop()
+		}
+		since := s.upSince
+		s.heldTimer = time.AfterFunc(a.heldCar, func() { a.confirmHeld(ip, since, armHeldText) })
+	}
+	return note, photo
+}
+
+// laneArm returns the camera watching a lane's arm, and its state (called with a.mu held).
+func (a *ArmAlerts) laneArm(gate string) (string, *armState) {
+	g := a.gates.Load()
+	if g == nil {
+		return "", nil
+	}
+	for ip, s := range a.arms {
+		if d, ok := g.ForIP(ip); ok && d.Gate == gate && d.Direction == "entry" {
+			return ip, s
+		}
+	}
+	return "", nil
+}
+
+// grabOpener keeps a photo of whoever raised the arm at `at`: the lane's keypad camera, or the
+// arm's own camera when the lane has none.
+func (a *ArmAlerts) grabOpener(ip string, at time.Time) {
+	camera := ip
+	if g := a.gates.Load(); g != nil {
+		if d, ok := g.ForIP(ip); ok {
+			if k := g.KeypadCamera(d.Gate); k != "" {
+				camera = k
+			}
+		}
+	}
+	var photo []byte
+	if f, watched := a.photos.Latest(camera); watched && f.data != nil {
+		photo = f.data
+	} else if data, err := a.snapshot(camera); err == nil {
+		photo = data
+	} else {
+		log.Printf("[ARM] %s: no photo of the arm going up at %s: %v", camera, at.Local().Format("15:04:05"), err)
+		return
+	}
+	photo = sendable(camera, photo)
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if s := a.arms[ip]; s != nil && s.upSince.Equal(at) {
+		s.opener = photo
+	}
+}
+
 // confirmHeld gives the held-up notice when the arm has stayed up since `since`.
-func (a *ArmAlerts) confirmHeld(ip string, since time.Time) {
+func (a *ArmAlerts) confirmHeld(ip string, since time.Time, text string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	s := a.arms[ip]
@@ -175,21 +276,25 @@ func (a *ArmAlerts) confirmHeld(ip string, since time.Time) {
 	}
 	// A camera that stopped sending frames says nothing new about the arm: wait for it
 	if f, watched := a.photos.Latest(ip); watched && time.Since(f.at) > armHeldStale {
-		s.heldTimer = time.AfterFunc(armHeldStale, func() { a.confirmHeld(ip, since) })
+		s.heldTimer = time.AfterFunc(armHeldStale, func() { a.confirmHeld(ip, since, text) })
 		return
 	}
 	s.heldTimer = nil
 	s.heldSince = since
 	a.saveHeld()
-	go a.sendAlert(ip, armHeldKey, "arm_held", "Arm held up", true, true, since)
+	go a.sendAlert(ip, armHeldKey, "arm_held", text, true, true, since)
 }
 
-// heldFor says how long the arm was up: "7 min", "2 h 14 min".
-func heldFor(d time.Duration) string {
-	m := int(d.Round(time.Minute) / time.Minute)
-	if m < 60 {
-		return strconv.Itoa(m) + " min"
+// upFor says how long the arm was up: "45 s", "2 min 56 s", "2 h 14 min".
+func upFor(d time.Duration) string {
+	sec := int(d.Round(time.Second) / time.Second)
+	switch {
+	case sec < 60:
+		return strconv.Itoa(sec) + " s"
+	case sec < 3600:
+		return strconv.Itoa(sec/60) + " min " + strconv.Itoa(sec%60) + " s"
 	}
+	m := sec / 60
 	return strconv.Itoa(m/60) + " h " + strconv.Itoa(m%60) + " min"
 }
 

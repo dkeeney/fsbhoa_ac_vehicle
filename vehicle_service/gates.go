@@ -200,3 +200,13 @@ func (g *Gates) OverviewCameras() map[string]OverviewLane {
 	}
 	return cams
 }
+
+// KeypadCamera returns an entrance lane's keypad camera address; "" if it has none.
+func (g *Gates) KeypadCamera(lane string) string {
+	for addr, d := range g.byAddr {
+		if d.Gate == lane && d.Direction == "entry" && d.Device == "keypad" {
+			return addr.String()
+		}
+	}
+	return ""
+}
