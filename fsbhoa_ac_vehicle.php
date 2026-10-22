@@ -30,6 +30,25 @@ FSBHOA_Vehicle_Settings::get_instance();
 add_filter( 'fsbhoa_monitor_show_vehicle_column', '__return_true' );
 
 /**
+ * Core's live monitor offers a button per lane over the vehicle column: the entrance lanes,
+ * then the exit lanes, by name, as the lane tables list them.
+ */
+add_filter(
+	'fsbhoa_monitor_vehicle_lanes',
+	function ( $lanes ) {
+		$options = FSBHOA_Vehicle_Settings::get_options();
+		foreach ( array( 'gates', 'exit_lanes' ) as $table ) {
+			foreach ( (array) $options[ $table ] as $lane ) {
+				if ( ! empty( $lane['name'] ) ) {
+					$lanes[] = $lane['name'];
+				}
+			}
+		}
+		return $lanes;
+	}
+);
+
+/**
  * One-time handoff to core (2026-10-13 plugin split): copy this plugin's photo retention
  * setting to core's, and remove this plugin's old daily purge. Runs once per site.
  */
