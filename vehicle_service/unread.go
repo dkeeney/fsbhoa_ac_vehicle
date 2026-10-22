@@ -34,6 +34,7 @@ type unreadCar struct {
 	after                time.Duration
 	done                 bool   // read, or reported as unread
 	note                 string // for its card, such as "Arm already up 2 min 56 s" (ArmAlerts.CarCrossed)
+	report               bool   // reported when no read comes (plate=); false: only matched, for its read's photo (photo=)
 	notePhoto            []byte // goes with the note
 }
 
@@ -120,7 +121,7 @@ func (c *unreadCar) matches(capture time.Time) bool {
 // Car takes a car counted into a lane by one of its cameras whose "beyond" zone has plate=,
 // with the note for its card, if any. The note goes with its read (Read), or with the car
 // when it has none; a read that arrived before the car was counted is already sent without it.
-func (u *UnreadCars) Car(camera, gate string, approach, start, end time.Time, after time.Duration, note string, notePhoto []byte) {
+func (u *UnreadCars) Car(camera, gate string, approach, start, end time.Time, after time.Duration, note string, notePhoto []byte, report bool) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	l := u.lane(gate)
@@ -130,7 +131,7 @@ func (u *UnreadCars) Car(camera, gate string, approach, start, end time.Time, af
 		}
 		return
 	}
-	c := &unreadCar{camera: camera, gate: gate, approach: approach, start: start, end: end, after: after, note: note, notePhoto: notePhoto}
+	c := &unreadCar{camera: camera, gate: gate, approach: approach, start: start, end: end, after: after, note: note, notePhoto: notePhoto, report: report}
 	l.latest = c
 	// Its read may have arrived first
 	for i, r := range l.reads {
@@ -197,6 +198,9 @@ func (u *UnreadCars) decide(c *unreadCar) {
 		}
 	}
 	u.mu.Unlock()
+	if !c.report {
+		return // matched only for a read's photo (photo=)
+	}
 
 	ts := func(t time.Time) string { return t.Local().Format(journalTimeFormat) }
 	if u.journal != nil {

@@ -37,11 +37,11 @@ func TestUnreadCars(t *testing.T) {
 	// A car read within its window, the read arriving after the count or before it
 	u, r := newTestUnread()
 	now := time.Now()
-	u.Car(cam, lane, now.Add(-time.Second), now, now.Add(time.Second), after, "", nil)
+	u.Car(cam, lane, now.Add(-time.Second), now, now.Add(time.Second), after, "", nil, true)
 	u.Read(lane, now.Add(100*time.Millisecond))
 	u.Read(lane, now.Add(-time.Second)) // 4 s before the next car entered "beyond", which claims it
 	next := now.Add(3 * time.Second)
-	u.Car(cam, lane, next.Add(-time.Second), next, next.Add(time.Second), after, "", nil)
+	u.Car(cam, lane, next.Add(-time.Second), next, next.Add(time.Second), after, "", nil, true)
 	time.Sleep(after + 4*time.Second)
 	if got := r.got(); len(got) != 0 {
 		t.Fatalf("read cars reported as unread: %+v", got)
@@ -50,9 +50,9 @@ func TestUnreadCars(t *testing.T) {
 	// A car with no read: reported once its window and the settle time have passed
 	u, r = newTestUnread()
 	now = time.Now()
-	u.Car(cam, lane, now.Add(-time.Second), now, now.Add(500*time.Millisecond), after, "", nil)
+	u.Car(cam, lane, now.Add(-time.Second), now, now.Add(500*time.Millisecond), after, "", nil, true)
 	// The same car counted again just after it left "beyond": not a second car
-	u.Car(cam, lane, now.Add(time.Second), now.Add(time.Second), now.Add(1500*time.Millisecond), after, "", nil)
+	u.Car(cam, lane, now.Add(time.Second), now.Add(time.Second), now.Add(1500*time.Millisecond), after, "", nil, true)
 	// A read at another lane, and one too late for the window
 	u.Read("North Enter", now)
 	u.Read(lane, now.Add(after+100*time.Millisecond))
@@ -66,8 +66,8 @@ func TestUnreadCars(t *testing.T) {
 	u, r = newTestUnread()
 	now = time.Now()
 	second := now.Add(3 * time.Second)
-	u.Car(cam, lane, now.Add(-time.Second), now, now.Add(time.Second), after, "", nil)
-	u.Car(cam, lane, second.Add(-time.Second), second, second.Add(time.Second), after, "", nil)
+	u.Car(cam, lane, now.Add(-time.Second), now, now.Add(time.Second), after, "", nil, true)
+	u.Car(cam, lane, second.Add(-time.Second), second, second.Add(time.Second), after, "", nil, true)
 	u.Read(lane, now.Add(50*time.Millisecond))
 	time.Sleep(3*time.Second + after + 300*time.Millisecond)
 	if got := r.got(); len(got) != 1 || !got[0].start.Equal(second) {
@@ -78,7 +78,7 @@ func TestUnreadCars(t *testing.T) {
 func TestUnreadCarsNote(t *testing.T) {
 	u, r := newTestUnread()
 	now := time.Now()
-	u.Car("192.168.107.141", "South Enter", now.Add(-time.Second), now, now.Add(time.Second), time.Second, "Arm already up 2 min 56 s", []byte("photo"))
+	u.Car("192.168.107.141", "South Enter", now.Add(-time.Second), now, now.Add(time.Second), time.Second, "Arm already up 2 min 56 s", []byte("photo"), true)
 	if c := u.Read("South Enter", now.Add(3*time.Second)); c.note != "" || c.notePhoto != nil {
 		t.Fatalf("a read outside the window got the note: %q", c.note)
 	}
@@ -125,5 +125,23 @@ func TestUnreadBacked(t *testing.T) {
 	defer mu.Unlock()
 	if sent != 1 {
 		t.Fatalf("a back-out with no plate read was sent %d times, want 1", sent)
+	}
+}
+
+// A car matched only for its read's photo (photo=) is never reported as unread, and its read
+// learns when it entered "beyond".
+func TestUnreadPhotoOnly(t *testing.T) {
+	const after = 200 * time.Millisecond
+	u, r := newTestUnread()
+	now := time.Now()
+	u.Car("192.168.107.10", "North Enter", now.Add(-time.Second), now, now.Add(time.Second), after, "", nil, false)
+	time.Sleep(after + 300*time.Millisecond)
+	if got := r.got(); len(got) != 0 {
+		t.Fatalf("a photo-only car was reported unread: %+v", got)
+	}
+	next := time.Now().Add(10 * time.Second) // well after the first car, not a second count of it
+	u.Car("192.168.107.10", "North Enter", next.Add(-time.Second), next, next.Add(time.Second), 5*time.Second, "", nil, false)
+	if c := u.Read("North Enter", next.Add(3*time.Second)); c.camera != "192.168.107.10" || !c.start.Equal(next) {
+		t.Fatalf("the read didn't get its car: %+v", c)
 	}
 }

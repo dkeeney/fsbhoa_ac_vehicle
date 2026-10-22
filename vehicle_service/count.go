@@ -47,6 +47,7 @@ type CountZone struct {
 	On     float64      `json:"on,omitempty"`     // the zone is full at this share; 0: countOnShare (empty at half)
 	Window float64      `json:"window,omitempty"` // approach only: seconds a car may take to reach "beyond"; 0: countApproachWindow
 	Plate  float64      `json:"plate,omitempty"`  // beyond only: seconds after a car enters "beyond" its plate read may be captured; 0: no check (unread.go)
+	Photo  float64      `json:"photo,omitempty"`  // beyond only: the same matching, only for the read's overview photo (no cars reported unread); 0: none
 }
 
 const (
@@ -128,7 +129,7 @@ func (c *CarCounter) SetZones(zones []CountZone) {
 
 func sameZones(z map[string]CountZone, approach, beyond CountZone) bool {
 	eq := func(a, b CountZone) bool {
-		if len(a.Points) != len(b.Points) || a.On != b.On || a.Window != b.Window || a.Plate != b.Plate {
+		if len(a.Points) != len(b.Points) || a.On != b.On || a.Window != b.Window || a.Plate != b.Plate || a.Photo != b.Photo {
 			return false
 		}
 		for i := range a.Points {
@@ -188,8 +189,14 @@ func (c *CarCounter) HandleFrame(ip string, f photoFrame) {
 		if c.arm != nil {
 			note, notePhoto = c.arm(gate, e.start)
 		}
-		if c.unread != nil && zc.beyondZone.Plate > 0 {
-			c.unread.Car(ip, gate, e.approach, e.start, e.end, time.Duration(zc.beyondZone.Plate*float64(time.Second)), note, notePhoto)
+		// Matched with the lane's plate reads: for its photo and note, and with plate= for a
+		// car with no read; photo= where the time to the read varies too much for that
+		if c.unread != nil && (zc.beyondZone.Plate > 0 || zc.beyondZone.Photo > 0) {
+			window, report := zc.beyondZone.Plate, true
+			if window == 0 {
+				window, report = zc.beyondZone.Photo, false
+			}
+			c.unread.Car(ip, gate, e.approach, e.start, e.end, time.Duration(window*float64(time.Second)), note, notePhoto, report)
 		}
 	}
 }
