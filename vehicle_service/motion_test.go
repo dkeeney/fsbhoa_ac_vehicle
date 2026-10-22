@@ -131,8 +131,8 @@ func TestMotionPass(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if img.Bounds().Dx() != 160 || img.Bounds().Dy() != 120 {
-		t.Errorf("saved frame is %v, want half size", img.Bounds())
+	if img.Bounds().Dx() != 320 || img.Bounds().Dy() != 240 { // not wider than overviewPhotoMaxWidth: kept as it came
+		t.Errorf("saved frame is %v, want full size", img.Bounds())
 	}
 	if frames[0] != filepath.Join("2026-10-17", "192.0.2.31", "140002.000.jpg") {
 		t.Errorf("first frame %v, want the one 3 seconds before the motion", frames[0])

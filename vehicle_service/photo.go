@@ -202,6 +202,29 @@ func (o *OverviewPhotos) Latest(ip string) (photoFrame, bool) {
 	return w.frames[len(w.frames)-1], true
 }
 
+// Between returns a camera's kept frames taken after `after` up to and including `upto`,
+// oldest first. Safe on a nil OverviewPhotos (nothing is watched).
+func (o *OverviewPhotos) Between(ip string, after, upto time.Time) []photoFrame {
+	if o == nil {
+		return nil
+	}
+	o.mu.Lock()
+	w := o.watches[ip]
+	o.mu.Unlock()
+	if w == nil {
+		return nil
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	var out []photoFrame
+	for _, f := range w.frames {
+		if f.at.After(after) && !f.at.After(upto) {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
 // nearest returns the kept frame closest to t, if one is within overviewPhotoMaxGap.
 func (w *photoWatch) nearest(t time.Time) (photoFrame, bool) {
 	w.mu.Lock()

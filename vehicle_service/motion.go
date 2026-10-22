@@ -72,8 +72,8 @@ const (
 	motionQuietFrames  = 3    // a region's motion ends after this many still frames
 	motionPreroll      = 3    // frames kept from before the first motion
 	motionPostroll     = 2    // frames kept after the last region goes still
-	motionMaxFrames    = 120  // frames kept per pass, so a region that never settles can't fill the disk
-	frameQuality       = 75   // saved frames are half size (960 x 540), about 100 KB
+	motionMaxFrames    = 240  // frames kept per pass (2 minutes at 2 a second), so a region that never settles can't fill the disk
+	frameQuality       = 75   // Speco frames are saved half size (960 x 540), about 100 KB
 	frameMinFreeBytes  = 2 << 30
 	motionFrameDirMode = 0750
 )
@@ -161,6 +161,7 @@ type cameraWatch struct {
 	failing bool
 	lowDisk bool
 	lastAt  time.Time // the last frame taken from the frame source
+	savedTo time.Time // the newest frame of this pass saved; zero between passes
 }
 
 type motionFrame struct {
@@ -285,8 +286,31 @@ func (w *cameraWatch) handleFrame(t time.Time, data []byte) {
 	}
 }
 
-// save writes one frame of the current pass, half size.
+// save writes one frame of the current pass. A camera whose frames come from the overview
+// photos (twice a second) also gets the kept frames since the last one saved, so its passes
+// have every frame the car count saw, for replaying it (2026-10-22: trucks with trailers).
 func (w *cameraWatch) save(f motionFrame) {
+	frames := []motionFrame{f}
+	if !w.savedTo.IsZero() {
+		if between := w.m.frames.Between(w.ip, w.savedTo, f.t); len(between) > 0 {
+			frames = frames[:0]
+			for _, k := range between {
+				frames = append(frames, motionFrame{t: k.at, jpeg: k.data})
+			}
+			if !frames[len(frames)-1].t.Equal(f.t) {
+				frames = append(frames, f)
+			}
+		}
+	}
+	w.savedTo = f.t
+	for _, f := range frames {
+		w.saveOne(f)
+	}
+}
+
+// saveOne writes one frame: half size when it is wider than overviewPhotoMaxWidth (the Speco
+// cameras' 1920 x 1080), as it came otherwise (the Reolink's 640 x 360).
+func (w *cameraWatch) saveOne(f motionFrame) {
 	p := w.pass
 	if len(p.frames) >= motionMaxFrames {
 		p.capped = true
@@ -302,10 +326,12 @@ func (w *cameraWatch) save(f motionFrame) {
 		return
 	}
 	rel := filepath.Join(f.t.Format("2006-01-02"), w.ip, f.t.Format("150405.000")+".jpg")
-	small, err := halfJPEG(f.jpeg, frameQuality)
-	if err != nil {
-		log.Printf("[MOTION] %s: frame not saved: %v", w.ip, err)
-		return
+	small := f.jpeg
+	if c, err := jpeg.DecodeConfig(bytes.NewReader(f.jpeg)); err != nil || c.Width > overviewPhotoMaxWidth {
+		if small, err = halfJPEG(f.jpeg, frameQuality); err != nil {
+			log.Printf("[MOTION] %s: frame not saved: %v", w.ip, err)
+			return
+		}
 	}
 	path := filepath.Join(w.m.dir, rel)
 	if err := os.MkdirAll(filepath.Dir(path), motionFrameDirMode); err != nil {
@@ -323,6 +349,7 @@ func (w *cameraWatch) save(f motionFrame) {
 func (w *cameraWatch) finish(t time.Time) {
 	p := w.pass
 	w.pass = nil
+	w.savedTo = time.Time{}
 	entry := map[string]interface{}{
 		"camera_ip": w.ip,
 		"start":     p.start.Local().Format(journalTimeFormat),
