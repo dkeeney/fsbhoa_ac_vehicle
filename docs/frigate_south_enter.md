@@ -28,6 +28,17 @@ The pool's GPU decoding crashes of 2026-10-22 morning ("Failed to sync surface")
 The Reolink login (the "All other cameras" line of the passwords file, `admin`) goes in two environment variables of the Frigate container, `FRIGATE_REOLINK_USER` and `FRIGATE_REOLINK_PASSWORD`, not in the file. Coordinates are pixels of the 640 x 360 detect stream, from the zones in the vehicle settings (Car Count Zones).
 
 ```yaml
+mqtt:
+  host: gates-mosquitto     # the gates' own broker, by container name on their network; never the pool's (1883)
+  port: 1883                # inside the gates' network; published on the host as 1884
+  topic_prefix: frigate_gates
+  client_id: frigate_gates
+
+detectors:                  # as the pool's (OpenVINO on the GPU); copy its detector and model sections
+  ov:
+    type: openvino
+    device: GPU
+
 cameras:
   south_enter:
     ffmpeg:
@@ -58,7 +69,7 @@ cameras:
         labels: []
 ```
 
-To check against the running `frigate.yml` before it goes in: whether the pool cameras use a global `hwaccel_args` (VAAPI, which crashed for two of them early on 2026-10-22). This camera's small stream decodes cheaply on the CPU, so it could leave the GPU decoder alone; the exact override is to be taken from Frigate 0.17's documentation and the existing file.
+No `hwaccel_args`: in its own instance the camera decodes on the CPU, which is cheap for 640 x 360 at 10 frames a second and leaves the GPU's video decoder to the pool. The detector's `model` section (the OpenVINO model's path, size and input format) is copied from the pool's `frigate.yml` when the file is written.
 
 ## The intrusion listener
 
