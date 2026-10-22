@@ -102,3 +102,39 @@ func TestPolygonMask(t *testing.T) {
 		t.Fatal("triangle mask wrong")
 	}
 }
+
+// A long vehicle whose front reaches "beyond" before "approach" fills (2026-10-20 12:31, a
+// truck towing a wood chipper) isn't also a car backing out.
+func TestCountLongVehicle(t *testing.T) {
+	rows := [][2]int{{55, 90}, {10, 95}, {0, 100}, {0, 100}, {0, 100}, {0, 60}, {0, 30}, {0, 0}}
+	rows = append(rows, make([][2]int, 20)...) // past the approach window
+	if got := runCounter(newTestCounter(), rows); got["car_backed"] != 0 || got["beyond_only"] != 1 {
+		t.Fatalf("counted %v, want only a beyond_only (a car once the arm says it was up)", got)
+	}
+}
+
+// "beyond" filling while the lane's arm is up is a car, with no "approach" before it.
+func TestCountBeyondWithArmUp(t *testing.T) {
+	for _, up := range []bool{true, false} {
+		c := NewCarCounter(nil, t.Logf)
+		var got []string
+		c.SetArm(func(string, time.Time) (string, []byte) { return "", nil }, func(string, time.Time) bool { return up })
+		c.gates.Store(NewGates([]GateConfig{{Name: "South Enter", OverviewIP: "192.0.2.41"}}, nil))
+		zc := newTestCounter()
+		t0 := time.Date(2026, 10, 21, 15, 1, 0, 0, time.Local)
+		frames := append(make([][2]int, 30), [2]int{60, 90}, [2]int{60, 90}, [2]int{0, 0}, [2]int{0, 0}, [2]int{0, 0})
+		for i, r := range frames {
+			for _, e := range zc.step(t0.Add(time.Duration(i)*500*time.Millisecond), countFrame(r[0], r[1])) {
+				e = c.classify("192.0.2.41", e)
+				got = append(got, e.kind)
+			}
+		}
+		want := "beyond_only"
+		if up {
+			want = "car"
+		}
+		if len(got) != 1 || got[0] != want {
+			t.Fatalf("arm up %v: got %v, want %s", up, got, want)
+		}
+	}
+}

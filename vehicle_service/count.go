@@ -32,6 +32,8 @@ type CarCounter struct {
 	// The lane's arm, told of each car through it: returns a note for the car's card and its
 	// photo (an arm already up). nil: none
 	arm func(gate string, at time.Time) (string, []byte)
+	// Whether the lane's arm was up at a moment (ArmAlerts.ArmUp). nil: not known
+	armUp func(gate string, at time.Time) bool
 }
 
 // CountZone is one zone of one camera's picture: a polygon in percent of its width and height.
@@ -59,8 +61,11 @@ func NewCarCounter(journal *Journal, debugf func(string, ...interface{})) *CarCo
 	return &CarCounter{cameras: map[string]*zoneCounter{}, journal: journal, debugf: debugf}
 }
 
-// SetArm sets what each counted car is reported to (ArmAlerts.CarCrossed). Call before frames arrive.
-func (c *CarCounter) SetArm(arm func(gate string, at time.Time) (string, []byte)) { c.arm = arm }
+// SetArm sets what each counted car is reported to (ArmAlerts.CarCrossed), and how to ask
+// whether the lane's arm was up (ArmAlerts.ArmUp). Call before frames arrive.
+func (c *CarCounter) SetArm(arm func(gate string, at time.Time) (string, []byte), armUp func(gate string, at time.Time) bool) {
+	c.arm, c.armUp = arm, armUp
+}
 
 // SetUnread sets where counted cars go to be matched with plate reads. Call before frames arrive.
 func (c *CarCounter) SetUnread(u *UnreadCars) { c.unread = u }
@@ -145,28 +150,43 @@ func (c *CarCounter) HandleFrame(ip string, f photoFrame) {
 		return
 	}
 	for _, e := range zc.step(f.at, countGray(img)) {
-		var lane GateDevice
-		if g := c.gates.Load(); g != nil {
-			if d, ok := g.ForIP(ip); ok {
-				lane = d
-				e.data["gate"], e.data["direction"] = d.Gate, d.Direction
-			}
-		}
-		e.data["camera_ip"] = ip
+		e = c.classify(ip, e)
 		c.journal.Write(e.kind, e.data)
 		log.Printf("[COUNT] %s: %s %v", ip, e.kind, e.data["beyond_start"])
-		if e.kind != "car" || lane.Gate == "" || lane.Direction != "entry" {
+		gate, _ := e.data["gate"].(string)
+		if e.kind != "car" || gate == "" || e.data["direction"] != "entry" {
 			continue
 		}
 		var note string
 		var notePhoto []byte
 		if c.arm != nil {
-			note, notePhoto = c.arm(lane.Gate, e.start)
+			note, notePhoto = c.arm(gate, e.start)
 		}
 		if c.unread != nil && zc.beyondZone.Plate > 0 {
-			c.unread.Car(ip, lane.Gate, e.approach, e.start, e.end, time.Duration(zc.beyondZone.Plate*float64(time.Second)), note, notePhoto)
+			c.unread.Car(ip, gate, e.approach, e.start, e.end, time.Duration(zc.beyondZone.Plate*float64(time.Second)), note, notePhoto)
 		}
 	}
+}
+
+// classify tags a count with its camera and lane, and makes "beyond" filling while the lane's
+// arm is up a car, even with no "approach" before it: 16 of the 20 beyond_only at South Enter
+// from 2026-10-20 to 22 came during an arm cycle, 13 with a plate read 2 to 4 s later (cars
+// that went past the keypad without filling "approach" enough, and a long vehicle whose front
+// reached "beyond" first).
+func (c *CarCounter) classify(ip string, e countEvent) countEvent {
+	var lane GateDevice
+	if g := c.gates.Load(); g != nil {
+		if d, ok := g.ForIP(ip); ok {
+			lane = d
+			e.data["gate"], e.data["direction"] = d.Gate, d.Direction
+		}
+	}
+	if e.kind == "beyond_only" && lane.Direction == "entry" && c.armUp != nil && c.armUp(lane.Gate, e.start) {
+		e.kind, e.approach = "car", e.start
+		e.data["arm_up"] = true
+	}
+	e.data["camera_ip"] = ip
+	return e
 }
 
 // zoneCounter is one camera's zones and state. step is called from one goroutine (the
@@ -222,6 +242,12 @@ func (z *zoneCounter) step(t time.Time, g []uint8) []countEvent {
 		} else {
 			z.approachOn, z.approachStart, z.reached, z.apprPeak = true, t, false, 0
 		}
+		// Something already past the arm as "approach" fills: one long vehicle across both zones
+		// (2026-10-20 12:31, a truck towing a wood chipper: "beyond" filled 0.5 s before
+		// "approach"), or a car close behind one leaving. Either way, not a car backing out.
+		if z.beyondOn {
+			z.reached = true
+		}
 	}
 	if z.approachOn {
 		z.approachLast = t
@@ -247,7 +273,7 @@ func (z *zoneCounter) step(t time.Time, g []uint8) []countEvent {
 			"beyond_end":   ts(t),
 			"beyond_peak":  math.Round(z.beyondPeak*100) / 100,
 		}
-		e := countEvent{kind: kind, data: data}
+		e := countEvent{kind: kind, data: data, start: z.beyondStart, end: t}
 		if z.beyondFromApproach {
 			e.kind = "car"
 			data["approach_start"] = ts(z.approachStart)

@@ -81,6 +81,7 @@ type armState struct {
 	heldTimer           *time.Timer // gives the held-up notice (rule 2 or 3)
 	heldSince           time.Time   // the held-up notice is on, since; zero: off
 	carThisUp           bool        // a car has gone through since the arm went up
+	lastUp, lastDown    time.Time   // the last time the arm was up, from and to (ArmUp)
 	opener              []byte      // the keypad camera's photo from when the arm went up
 }
 
@@ -171,6 +172,9 @@ func (a *ArmAlerts) armHeld(ip string, s *armState, down bool, at time.Time) {
 		}
 		return
 	}
+	if !s.upSince.IsZero() {
+		s.lastUp, s.lastDown = s.upSince, at
+	}
 	s.upSince = time.Time{}
 	if s.heldTimer != nil {
 		s.heldTimer.Stop()
@@ -222,6 +226,22 @@ func (a *ArmAlerts) CarCrossed(gate string, at time.Time) (string, []byte) {
 		s.heldTimer = time.AfterFunc(a.heldCar, func() { a.confirmHeld(ip, since, armHeldText) })
 	}
 	return note, photo
+}
+
+// ArmUp reports whether a lane's arm was up at `at`: up now since before it, or up over it the
+// last time (a car's count is decided a second or two after it entered "beyond", when the arm
+// may already be coming down).
+func (a *ArmAlerts) ArmUp(gate string, at time.Time) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	_, s := a.laneArm(gate)
+	if s == nil {
+		return false
+	}
+	if !s.upSince.IsZero() && !s.upSince.After(at) {
+		return true
+	}
+	return !s.lastUp.IsZero() && !s.lastUp.After(at) && !s.lastDown.Before(at)
 }
 
 // laneArm returns the camera watching a lane's arm, and its state (called with a.mu held).
