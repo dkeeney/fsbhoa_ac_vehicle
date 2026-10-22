@@ -76,5 +76,7 @@ func restartNeeded(old, cur *ServiceConfig) []string {
 	check("lpr_drop_dir", old.LPRDropDir != cur.LPRDropDir)
 	check("overview_frame_dir", old.OverviewFrameDir != cur.OverviewFrameDir)
 	check("overview_frame_days", old.OverviewFrameDays != cur.OverviewFrameDays)
+	check("frigate_broker", old.FrigateBroker != cur.FrigateBroker)
+	check("frigate_topic", old.FrigateTopic != cur.FrigateTopic)
 	return changed
 }

@@ -38,6 +38,9 @@ type ServiceConfig struct {
 	OverviewFrameDays int            `json:"overview_frame_days"` // kept this many days
 	// Car counting from the overview cameras' frames (count.go). No zones: none.
 	CountZones []CountZone `json:"count_zones"`
+	// The gates' Frigate (frigate.go): its MQTT broker, host:port, and topic prefix. Empty: none.
+	FrigateBroker string `json:"frigate_broker"`
+	FrigateTopic  string `json:"frigate_topic"`
 
 	// Local runtime fields (not in JSON, populated via flags/defaults)
 	ConfigPath     string        `json:"-"`

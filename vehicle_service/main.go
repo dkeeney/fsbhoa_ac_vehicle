@@ -242,6 +242,11 @@ func main() {
 	carCounter.SetArm(armAlerts.CarCrossed, armAlerts.ArmUp) // a car through an arm already up gets a note on its card
 	go motion.Run()
 
+	// The gates' Frigate's tracked objects, journaled only (frigate.go)
+	if cfg.FrigateBroker != "" {
+		go NewFrigateEvents(cfg.FrigateBroker, cfg.FrigateTopic, journal).Run()
+	}
+
 	// The gates' devices are the only addresses (besides this machine) that may call the
 	// webhooks, and a device's address tells which gate and lane a call is from.
 	var gates atomic.Pointer[Gates]

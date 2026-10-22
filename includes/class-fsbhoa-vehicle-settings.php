@@ -84,6 +84,7 @@ class FSBHOA_Vehicle_Settings {
 			'plate_events'         => 0,
 			'ram_file'             => '',
 			'lpr_drop_dir'         => self::LPR_DROP_DIR_DEFAULT,
+			'frigate_mqtt'         => '',
 			'gates'                => array(),
 			'exit_lanes'           => array(),
 			'motion_regions'       => array(),
@@ -170,6 +171,15 @@ class FSBHOA_Vehicle_Settings {
 			self::PAGE_SLUG,
 			'fsbhoa_vehicle_sources_section',
 			array( 'label_for' => 'fsbhoa_vehicle_lpr_drop_dir' )
+		);
+
+		add_settings_field(
+			'frigate_mqtt',
+			__( 'Gates Frigate (MQTT)', 'fsbhoa-ac-vehicle' ),
+			array( $this, 'render_frigate_mqtt_field' ),
+			self::PAGE_SLUG,
+			'fsbhoa_vehicle_sources_section',
+			array( 'label_for' => 'fsbhoa_vehicle_frigate_mqtt' )
 		);
 
 		add_settings_field(
@@ -282,6 +292,7 @@ class FSBHOA_Vehicle_Settings {
 
 		$sanitized['ram_file']    = $this->sanitize_ram_file( $input['ram_file'] ?? '' );
 		$sanitized['lpr_drop_dir'] = $this->sanitize_lpr_drop_dir( $input['lpr_drop_dir'] ?? '' );
+		$sanitized['frigate_mqtt'] = $this->sanitize_frigate_mqtt( $input['frigate_mqtt'] ?? '' );
 		$ips                      = array();
 		$sanitized['gates']       = $this->sanitize_lanes( $input['gates'] ?? array(), 'gates', $ips );
 		$sanitized['exit_lanes']  = $this->sanitize_lanes( $input['exit_lanes'] ?? array(), 'exit_lanes', $ips );
@@ -346,6 +357,30 @@ class FSBHOA_Vehicle_Settings {
 			return '';
 		}
 		return $path;
+	}
+
+	/**
+	 * The gates' Frigate broker: "<host>:<port> [topic prefix]"; empty: none. A value that doesn't
+	 * fit is dropped with a message.
+	 */
+	private function sanitize_frigate_mqtt( $value ) {
+		$value = trim( preg_replace( '/\s+/', ' ', sanitize_text_field( (string) $value ) ) );
+		if ( '' === $value ) {
+			return '';
+		}
+		if ( ! preg_match( '/^[A-Za-z0-9.-]+:\d{1,5}( [A-Za-z0-9_-]{1,40})?$/', $value ) ) {
+			add_settings_error(
+				self::OPTION_NAME,
+				'fsbhoa_vehicle_frigate_mqtt',
+				sprintf(
+					/* translators: %s: the value entered */
+					__( 'Gates Frigate (MQTT) "%s" was not saved: it must be a host and port, then optionally a topic prefix, such as alarm.fsbhoa.com:1884 frigate_gates.', 'fsbhoa-ac-vehicle' ),
+					$value
+				)
+			);
+			return '';
+		}
+		return $value;
 	}
 
 	/**
@@ -940,6 +975,21 @@ class FSBHOA_Vehicle_Settings {
 		<?php
 	}
 
+	public function render_frigate_mqtt_field() {
+		$options = self::get_options();
+		?>
+		<input type="text"
+				 id="fsbhoa_vehicle_frigate_mqtt"
+				 name="<?php echo esc_attr( self::OPTION_NAME . '[frigate_mqtt]' ); ?>"
+				 value="<?php echo esc_attr( $options['frigate_mqtt'] ?? '' ); ?>"
+				 placeholder="alarm.fsbhoa.com:1884 frigate_gates"
+				 class="regular-text code" />
+		<p class="description">
+			<?php esc_html_e( 'The gates\' own Frigate on the alarm box (kept apart from the pool intrusion system\'s): its MQTT broker\'s host and port, then its topic prefix (default frigate_gates). vehicle_service subscribes to <prefix>/events and records each tracked object in the journal (new, each zone it enters, end), to compare with the car count and the plate reads; it never publishes. Blank: not used. Restart vehicle_service after changing this.', 'fsbhoa-ac-vehicle' ); ?>
+		</p>
+		<?php
+	}
+
 	public function render_motion_regions_field() {
 		$options = self::get_options();
 		?>
@@ -1240,6 +1290,8 @@ class FSBHOA_Vehicle_Settings {
 			'exit_lanes'           => array_values( is_array( $options['exit_lanes'] ?? null ) ? $options['exit_lanes'] : array() ),
 			'motion_regions'       => array_values( is_array( $options['motion_regions'] ?? null ) ? $options['motion_regions'] : array() ),
 			'count_zones'          => array_values( is_array( $options['count_zones'] ?? null ) ? $options['count_zones'] : array() ),
+			'frigate_broker'       => strtok( (string) ( $options['frigate_mqtt'] ?? '' ), ' ' ) ?: '',
+			'frigate_topic'        => trim( (string) strstr( (string) ( $options['frigate_mqtt'] ?? '' ), ' ' ) ),
 		);
 
 		$json_data = json_encode($config, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES );
