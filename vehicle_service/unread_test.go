@@ -90,3 +90,40 @@ func TestUnreadCarsNote(t *testing.T) {
 		t.Fatalf("a read car was reported unread: %+v", got)
 	}
 }
+
+// A car the counter says backed out is sent only when no plate was read around it: a read
+// means it drove in and the counter missed it (2026-10-22, white cars at South Enter).
+func TestUnreadBacked(t *testing.T) {
+	const after = 200 * time.Millisecond
+	cam, lane := "192.168.107.141", "South Enter"
+	var mu sync.Mutex
+	sent := 0
+	u := NewUnreadCars(nil)
+	u.settle = 50 * time.Millisecond
+	u.SetSendBacked(func(camera, gate string, e countEvent, photoAt time.Time) {
+		mu.Lock()
+		sent++
+		mu.Unlock()
+	})
+	now := time.Now()
+
+	// Read a moment after it left "approach": it drove in, not sent
+	u.Backed(cam, lane, countEvent{approach: now.Add(-2 * time.Second), end: now}, after, now)
+	u.Read(lane, now.Add(100*time.Millisecond))
+	time.Sleep(after + 300*time.Millisecond)
+	mu.Lock()
+	if sent != 0 {
+		t.Fatalf("a back-out with a plate read was sent")
+	}
+	mu.Unlock()
+
+	// No read (another lane, so that read isn't near it): sent
+	later := time.Now()
+	u.Backed(cam, "North Enter", countEvent{approach: later.Add(-2 * time.Second), end: later}, after, later)
+	time.Sleep(after + 300*time.Millisecond)
+	mu.Lock()
+	defer mu.Unlock()
+	if sent != 1 {
+		t.Fatalf("a back-out with no plate read was sent %d times, want 1", sent)
+	}
+}

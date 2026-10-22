@@ -29,6 +29,9 @@ type CarCounter struct {
 	debugf  func(string, ...interface{})
 	gates   atomic.Pointer[Gates]
 	unread  *UnreadCars // cars with no plate read, for cameras with plate=; nil: none
+	// Takes a car that backed out of an entrance lane, for cameras with plate=: the camera,
+	// the lane, the plate= window and the moment for its photo (UnreadCars.Backed). nil: journal only
+	backed func(camera, gate string, e countEvent, after time.Duration, photoAt time.Time)
 	// The lane's arm, told of each car through it: returns a note for the car's card and its
 	// photo (an arm already up). nil: none
 	arm func(gate string, at time.Time) (string, []byte)
@@ -74,6 +77,11 @@ func (c *CarCounter) SetArm(arm func(gate string, at time.Time) (string, []byte)
 
 // SetUnread sets where counted cars go to be matched with plate reads. Call before frames arrive.
 func (c *CarCounter) SetUnread(u *UnreadCars) { c.unread = u }
+
+// SetBacked sets where a car that backed out goes (UnreadCars.Backed). Call before frames arrive.
+func (c *CarCounter) SetBacked(send func(camera, gate string, e countEvent, after time.Duration, photoAt time.Time)) {
+	c.backed = send
+}
 
 // SetGates gives the lanes, so each count is journaled with its camera's lane.
 func (c *CarCounter) SetGates(g *Gates) { c.gates.Store(g) }
@@ -159,7 +167,20 @@ func (c *CarCounter) HandleFrame(ip string, f photoFrame) {
 		c.journal.Write(e.kind, e.data)
 		log.Printf("[COUNT] %s: %s %v", ip, e.kind, e.data["beyond_start"])
 		gate, _ := e.data["gate"].(string)
-		if e.kind != "car" || gate == "" || e.data["direction"] != "entry" {
+		if gate == "" || e.data["direction"] != "entry" {
+			continue
+		}
+		// A car that backed out (at the keypad, or at the arm) is a clue for staff: a driver
+		// who had to back up and enter a code again, or one let in by someone else. Sent only
+		// where the count is matched with the plate reads (plate=), where it holds up.
+		if e.kind == "car_backed" && c.backed != nil && zc.beyondZone.Plate > 0 {
+			photoAt := e.approach.Add(e.end.Sub(e.approach) / 2) // halfway through its time in "approach"
+			if e.data["went_back"] == true {
+				photoAt = e.start // as it reached past the arm
+			}
+			c.backed(ip, gate, e, time.Duration(zc.beyondZone.Plate*float64(time.Second)), photoAt)
+		}
+		if e.kind != "car" {
 			continue
 		}
 		var note string
@@ -221,7 +242,7 @@ type zoneCounter struct {
 type countEvent struct {
 	kind                 string
 	data                 map[string]interface{}
-	approach, start, end time.Time // a car: "approach" filled, "beyond" filled and emptied
+	approach, start, end time.Time // a car: "approach" filled, "beyond" filled and emptied; backed out: "approach" filled and emptied (end)
 }
 
 func (z *zoneCounter) step(t time.Time, g []uint8) []countEvent {
@@ -296,6 +317,7 @@ func (z *zoneCounter) step(t time.Time, g []uint8) []countEvent {
 			if z.beyondFromApproach {
 				e.kind = "car_backed"
 				data["approach_start"] = ts(z.approachStart)
+				e.approach = z.approachStart
 			}
 		} else if z.beyondFromApproach {
 			e.kind = "car"
@@ -316,7 +338,7 @@ func (z *zoneCounter) step(t time.Time, g []uint8) []countEvent {
 			"approach_start": ts(z.approachStart),
 			"approach_end":   ts(z.approachLast),
 			"approach_peak":  math.Round(z.apprPeak*100) / 100,
-		}})
+		}, approach: z.approachStart, end: z.approachLast})
 	}
 	return events
 }

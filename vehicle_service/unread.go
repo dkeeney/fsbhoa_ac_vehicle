@@ -22,7 +22,9 @@ type UnreadCars struct {
 	lanes   map[string]*unreadLane // by lane name
 	journal *Journal
 	send    func(unreadCar) // sends a car to the vehicle log; nil: journal only
-	settle  time.Duration
+	// sends a car that backed out to the vehicle log, with the moment for its photo; nil: journal only
+	sendBacked func(camera, gate string, e countEvent, photoAt time.Time)
+	settle     time.Duration
 }
 
 // unreadCar is one counted car, waiting for its read.
@@ -39,6 +41,7 @@ type unreadLane struct {
 	cars   []*unreadCar // waiting for a read, oldest first
 	reads  []time.Time  // capture times of reads no car has claimed yet, oldest first
 	latest *unreadCar   // the last car counted, for a second count of the same car
+	all    []time.Time  // capture times of every read, claimed or not, for the last unreadReadKeep
 }
 
 const (
@@ -61,6 +64,44 @@ func NewUnreadCars(journal *Journal) *UnreadCars {
 
 // SetSend sets how an unread car is sent to the vehicle log. Call before cars arrive.
 func (u *UnreadCars) SetSend(send func(unreadCar)) { u.send = send }
+
+// SetSendBacked sets how a car that backed out is sent to the vehicle log. Call before cars arrive.
+func (u *UnreadCars) SetSendBacked(send func(camera, gate string, e countEvent, photoAt time.Time)) {
+	u.sendBacked = send
+}
+
+// Backed takes a car the counter says backed out of a lane (count.go's car_backed: from
+// "approach" filling, e.approach, to it emptying, e.end). It is sent only if the lane read no
+// plate from unreadPlateBefore before it to after seconds after it: on 2026-10-22 six of seven
+// daytime back-outs at South Enter were cars that drove in (white cars, "beyond" never
+// filled), each read 1 to 4 s after "approach" emptied. Those are journaled as car_missed.
+func (u *UnreadCars) Backed(camera, gate string, e countEvent, after time.Duration, photoAt time.Time) {
+	from, to := e.approach.Add(-unreadPlateBefore), e.end.Add(after)
+	time.AfterFunc(time.Until(to.Add(u.settle)), func() {
+		u.mu.Lock()
+		var read time.Time
+		for _, r := range u.lane(gate).all {
+			if !r.Before(from) && !r.After(to) {
+				read = r
+				break
+			}
+		}
+		u.mu.Unlock()
+		ts := func(t time.Time) string { return t.Local().Format(journalTimeFormat) }
+		if !read.IsZero() {
+			if u.journal != nil {
+				u.journal.Write("car_missed", map[string]interface{}{
+					"camera_ip": camera, "gate": gate, "direction": "entry",
+					"approach_start": ts(e.approach), "approach_end": ts(e.end), "read_capture": ts(read),
+				})
+			}
+			return
+		}
+		if u.sendBacked != nil {
+			u.sendBacked(camera, gate, e, photoAt)
+		}
+	})
+}
 
 func (u *UnreadCars) lane(gate string) *unreadLane {
 	l := u.lanes[gate]
@@ -109,6 +150,11 @@ func (u *UnreadCars) Read(gate string, capture time.Time) (string, []byte) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	l := u.lane(gate)
+	l.all = append(l.all, capture)
+	keep := time.Now().Add(-unreadReadKeep)
+	for len(l.all) > 0 && l.all[0].Before(keep) {
+		l.all = l.all[1:]
+	}
 	for i, c := range l.cars {
 		if c.matches(capture) {
 			c.done = true

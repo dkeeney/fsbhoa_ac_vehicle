@@ -228,6 +228,11 @@ func main() {
 	unreadCars := NewUnreadCars(journal)
 	unreadCars.SetSend(func(c unreadCar) { plateEvents.SendUnread(c) })
 	carCounter.SetUnread(unreadCars)
+	// Cars that backed out, sent as notices when no plate was read around them
+	unreadCars.SetSendBacked(func(camera, gate string, e countEvent, photoAt time.Time) {
+		plateEvents.SendBacked(camera, gate, e, photoAt)
+	})
+	carCounter.SetBacked(unreadCars.Backed)
 	lprDrop.SetUnread(unreadCars)
 	go lprDrop.Run()
 

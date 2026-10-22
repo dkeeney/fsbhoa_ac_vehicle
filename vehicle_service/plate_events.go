@@ -210,6 +210,57 @@ func (p *PlateEvents) SendUnread(c unreadCar) bool {
 	return true
 }
 
+// SendBacked queues a car that backed out of an entrance lane (count.go) as a lane notice,
+// when the setting is on: core shows it as an amber "Backed out" card with the overview
+// photo, without an alarm. A driver who backs up and enters a code again, or one let in by
+// someone else after the car ahead waited at the arm, is worth a look (the user, 2026-10-22).
+func (p *PlateEvents) SendBacked(camera, gate string, e countEvent, photoAt time.Time) bool {
+	if !p.enabled.Load() {
+		return false
+	}
+	details := map[string]interface{}{
+		"source":         "count_only",
+		"camera_ip":      camera,
+		"direction":      "entry",
+		"approach_start": e.approach.Format(time.RFC3339Nano),
+		"source_host":    hostname,
+	}
+	if e.data["went_back"] == true {
+		details["went_back"] = true // reached past the arm, then reversed
+		details["beyond_start"] = e.start.Format(time.RFC3339Nano)
+	}
+	var overview []byte
+	if p.photos != nil {
+		var at time.Time
+		if overview, at = p.photos.Near(camera, photoAt); overview != nil {
+			details["overview_photo_at"] = at.Format(time.RFC3339Nano)
+		}
+	}
+	uid := "backed_" + camera + "_" + e.approach.Local().Format("20060102-150405.000")
+	payload, err := json.Marshal(map[string]interface{}{
+		"event_uid":          uid,
+		"event_timestamp":    e.approach.Local().Format("2006-01-02 15:04:05.000"),
+		"gate_identifier":    gate,
+		"direction":          "entry",
+		"overview_image_b64": b64(overview),
+		"alert_key":          "car_backed",
+		"alert_text":         "Backed out",
+		"alert_active":       true,
+		"alert_notice":       true,
+		"raw_details":        details,
+	})
+	if err != nil {
+		log.Printf("[ERROR] Backed out event JSON: %v", err)
+		return false
+	}
+	if err := p.dispatcher.Enqueue(uid, payload); err != nil {
+		log.Printf("[ERROR] Could not queue backed out event %s: %v", uid, err)
+		return false
+	}
+	log.Printf("[DISPATCH] Backed out event %s: %s", uid, gate)
+	return true
+}
+
 // b64 returns a photo base64-encoded; "" if there is none.
 func b64(data []byte) string {
 	if len(data) == 0 {
