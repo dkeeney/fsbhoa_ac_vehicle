@@ -161,3 +161,33 @@ func TestLPRCaptureTimeText(t *testing.T) {
 		t.Errorf("got %q", got)
 	}
 }
+
+// A read's file uploaded just before the service started is found on disk (2026-10-22
+// 15:59:17: a restart between the plate crop and the scene photo).
+func TestLPRFindPartner(t *testing.T) {
+	dir := t.TempDir()
+	plate := filepath.Join(dir, "VEHICE_2026-10-22-15-59-17-647_plate_DV67496.jpg")
+	scene := filepath.Join(dir, "VEHICE_2026-10-22-15-59-17-647_src.jpg")
+	for _, f := range []string{plate, scene} {
+		if err := os.WriteFile(f, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	d := &LPRDrop{}
+	r := &lprRead{captureTime: "2026-10-22-15-59-17-647", sceneFile: scene}
+	d.findPartner(r)
+	if r.plate != "DV67496" || r.plateFile != plate {
+		t.Errorf("plate crop not found: %+v", r)
+	}
+	r = &lprRead{captureTime: "2026-10-22-15-59-17-647", plate: "DV67496", plateFile: plate}
+	d.findPartner(r)
+	if r.sceneFile != scene {
+		t.Errorf("scene photo not found: %+v", r)
+	}
+	// A vehicle without a readable plate's scene photo alone: nothing to find
+	r = &lprRead{captureTime: "2026-10-22-16-00-00-001", sceneFile: filepath.Join(dir, "VEHICE_2026-10-22-16-00-00-001_src.jpg")}
+	d.findPartner(r)
+	if r.plateFile != "" {
+		t.Errorf("found a plate crop that isn't there: %+v", r)
+	}
+}

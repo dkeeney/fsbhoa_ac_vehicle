@@ -298,9 +298,40 @@ func (d *LPRDrop) finish(key string) {
 	}
 }
 
+// findPartner looks in a read's folder for the file that never arrived as a notice: one
+// uploaded just before the service started, which it doesn't read (2026-10-22 15:59:17, a
+// restart between a read's plate crop and its scene photo sent DV67496 as a read without a plate).
+func (d *LPRDrop) findPartner(r *lprRead) {
+	have := r.plateFile
+	if have == "" {
+		have = r.sceneFile
+	}
+	if have == "" || (r.plateFile != "" && r.sceneFile != "") {
+		return
+	}
+	dir := filepath.Dir(have)
+	if r.plateFile == "" {
+		names, _ := filepath.Glob(filepath.Join(dir, "VEHICE_"+r.captureTime+"_plate_*.jpg"))
+		for _, name := range names {
+			if m := lprPlateFile.FindStringSubmatch(filepath.Base(name)); m != nil && m[1] == r.captureTime {
+				r.plate, r.plateFile = m[2], name
+				log.Printf("[LPR] Found the plate crop %s on disk", filepath.Base(name))
+				return
+			}
+		}
+		return
+	}
+	name := filepath.Join(dir, "VEHICE_"+r.captureTime+"_src.jpg")
+	if _, err := os.Stat(name); err == nil {
+		r.sceneFile = name
+		log.Printf("[LPR] Found the scene photo %s on disk", filepath.Base(name))
+	}
+}
+
 // journalRead writes the read to the journal. Call with d.mu held.
 func (d *LPRDrop) journalRead(key string, r *lprRead) {
 	delete(d.pending, key)
+	d.findPartner(r)
 	plate := r.plate
 	entry := map[string]interface{}{
 		"camera":       r.camera,
