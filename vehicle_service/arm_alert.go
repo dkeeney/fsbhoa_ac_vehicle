@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -20,6 +21,11 @@ import (
 // live monitor shows as a red banner with a sound, until the whole arm is seen down again.
 //
 // The alert holds while the stub goes up and down, and across a restart (the state file).
+//
+// The same "arm-down" region also tells when the arm has been up for armHeldAfter: staff hold
+// it up for long periods (Bingo night, with a schedule in RAM), and an arm stuck up or missing
+// looks the same. That is a notice, not an alarm (core's alert_notice): "Arm held up" when
+// it starts, "Arm down again" when the arm comes down (TODO #32, "The arm held up").
 type ArmAlerts struct {
 	mu         sync.Mutex
 	arms       map[string]*armState // by camera IP
@@ -29,6 +35,8 @@ type ArmAlerts struct {
 	photos     *OverviewPhotos // the photo sent with the alert; nil: none
 	gates      atomic.Pointer[Gates]
 	stateFile  string
+	heldFile   string
+	heldAfter  time.Duration
 	snapshot   func(ip string) ([]byte, error) // the camera's own snapshot, when no frame is kept
 }
 
@@ -38,6 +46,12 @@ const (
 	armAlertKey     = "arm_broken"
 	armBrokenAfter  = 3 * time.Minute // the tip goes off about a second before the pivot each time the arm rises, and haze or a car can hide it for a minute or so (North Enter's .11, 2026-10-21)
 	armAlertStateFn = "arm_alerts.json"
+	armHeldKey      = "arm_held"
+	// An ordinary cycle is up 5 to 30 s; a driver who stops under the raised arm keeps it up
+	// longer (2026-10-20 and 21 at South Enter: three times about 3 minutes, one car each).
+	armHeldAfter   = 5 * time.Minute
+	armHeldStateFn = "arm_held.json"
+	armHeldStale   = 30 * time.Second // the camera's newest frame is older than this: it isn't watching the arm
 )
 
 // enqueuer queues an event for the vehicle log (the Dispatcher).
@@ -51,6 +65,9 @@ type armState struct {
 	brokenSince         time.Time   // when the arm was last seen down without its tip; zero: it isn't
 	timer               *time.Timer // raises the alert once it has lasted armBrokenAfter
 	raisedSince         time.Time   // the alert is on, since; zero: off
+	upSince             time.Time   // the arm was last seen going up; zero: it is down (or not known)
+	heldTimer           *time.Timer // gives the held-up notice once the arm has been up armHeldAfter
+	heldSince           time.Time   // the held-up notice is on, since; zero: off
 }
 
 func NewArmAlerts(dispatcher enqueuer, journal *Journal, stateDir string) *ArmAlerts {
@@ -60,6 +77,8 @@ func NewArmAlerts(dispatcher enqueuer, journal *Journal, stateDir string) *ArmAl
 		dispatcher: dispatcher,
 		journal:    journal,
 		stateFile:  filepath.Join(stateDir, armAlertStateFn),
+		heldFile:   filepath.Join(stateDir, armHeldStateFn),
+		heldAfter:  armHeldAfter,
 		snapshot: func(ip string) ([]byte, error) {
 			return fetchSnapshot(&http.Client{Timeout: snapshotTimeout}, "http://"+ip+"/snapshot.JPG")
 		},
@@ -88,6 +107,7 @@ func (a *ArmAlerts) HandleState(ip, region string, on bool, at time.Time) {
 	}
 	if region == armDownRegion {
 		s.down, s.downKnown = on, true
+		a.armHeld(ip, s, on, at)
 	} else {
 		s.tip, s.tipKnown = on, true
 	}
@@ -122,6 +142,57 @@ func (a *ArmAlerts) HandleState(ip, region string, on bool, at time.Time) {
 	}
 }
 
+// armHeld follows the arm going up and coming down, for the held-up notice (called with a.mu held).
+func (a *ArmAlerts) armHeld(ip string, s *armState, down bool, at time.Time) {
+	if !down {
+		if s.upSince.IsZero() && s.heldSince.IsZero() {
+			s.upSince = at
+			since := at
+			s.heldTimer = time.AfterFunc(a.heldAfter, func() { a.confirmHeld(ip, since) })
+		}
+		return
+	}
+	s.upSince = time.Time{}
+	if s.heldTimer != nil {
+		s.heldTimer.Stop()
+		s.heldTimer = nil
+	}
+	if !s.heldSince.IsZero() {
+		text := "Arm down again (up " + heldFor(at.Sub(s.heldSince)) + ")"
+		s.heldSince = time.Time{}
+		a.saveHeld()
+		go a.sendAlert(ip, armHeldKey, "arm_down_again", text, false, true, at)
+	}
+}
+
+// confirmHeld gives the held-up notice when the arm has stayed up since `since`.
+func (a *ArmAlerts) confirmHeld(ip string, since time.Time) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	s := a.arms[ip]
+	if s == nil || !s.upSince.Equal(since) || !s.heldSince.IsZero() {
+		return
+	}
+	// A camera that stopped sending frames says nothing new about the arm: wait for it
+	if f, watched := a.photos.Latest(ip); watched && time.Since(f.at) > armHeldStale {
+		s.heldTimer = time.AfterFunc(armHeldStale, func() { a.confirmHeld(ip, since) })
+		return
+	}
+	s.heldTimer = nil
+	s.heldSince = since
+	a.saveHeld()
+	go a.sendAlert(ip, armHeldKey, "arm_held", "Arm held up", true, true, since)
+}
+
+// heldFor says how long the arm was up: "7 min", "2 h 14 min".
+func heldFor(d time.Duration) string {
+	m := int(d.Round(time.Minute) / time.Minute)
+	if m < 60 {
+		return strconv.Itoa(m) + " min"
+	}
+	return strconv.Itoa(m/60) + " h " + strconv.Itoa(m%60) + " min"
+}
+
 // confirm raises the alert when the arm has stayed down without its tip since `since`.
 func (a *ArmAlerts) confirm(ip string, since time.Time) {
 	a.mu.Lock()
@@ -136,17 +207,22 @@ func (a *ArmAlerts) confirm(ip string, since time.Time) {
 	go a.send(ip, true, since)
 }
 
-// send journals the alert's start or end and queues it for the vehicle log.
+// send journals the broken arm alert's start or end and queues it for the vehicle log.
 func (a *ArmAlerts) send(ip string, active bool, at time.Time) {
+	kind, text := "arm_broken", "Arm broken"
+	if !active {
+		kind, text = "arm_ok", "Arm OK again"
+	}
+	a.sendAlert(ip, armAlertKey, kind, text, active, false, at)
+}
+
+// sendAlert journals a lane alert or notice (as `kind`) and queues it for the vehicle log.
+func (a *ArmAlerts) sendAlert(ip, key, kind, text string, active, notice bool, at time.Time) {
 	gate, direction := ip, "entry"
 	if g := a.gates.Load(); g != nil {
 		if d, ok := g.ForIP(ip); ok {
 			gate, direction = d.Gate, d.Direction
 		}
-	}
-	kind, text := "arm_broken", "Arm broken"
-	if !active {
-		kind, text = "arm_ok", "Arm OK again"
 	}
 	a.journal.Write(kind, map[string]interface{}{"camera_ip": ip, "gate": gate, "at": at.Local().Format(journalTimeFormat)})
 	log.Printf("[ARM] %s (%s): %s since %s", gate, ip, text, at.Local().Format("15:04:05"))
@@ -176,9 +252,10 @@ func (a *ArmAlerts) send(ip string, active bool, at time.Time) {
 		"gate_identifier":    gate,
 		"direction":          direction,
 		"overview_image_b64": b64(photo),
-		"alert_key":          armAlertKey,
+		"alert_key":          key,
 		"alert_text":         text,
 		"alert_active":       active,
+		"alert_notice":       notice,
 		"raw_details": map[string]interface{}{
 			"source":      "arm_watch",
 			"camera_ip":   ip,
@@ -202,31 +279,56 @@ func (a *ArmAlerts) save() {
 			on[ip] = s.raisedSince
 		}
 	}
+	writeArmState(a.stateFile, on)
+}
+
+// saveHeld writes the cameras whose held-up notice is on (called with a.mu held).
+func (a *ArmAlerts) saveHeld() {
+	on := map[string]time.Time{}
+	for ip, s := range a.arms {
+		if !s.heldSince.IsZero() {
+			on[ip] = s.heldSince
+		}
+	}
+	writeArmState(a.heldFile, on)
+}
+
+func writeArmState(file string, on map[string]time.Time) {
 	data, _ := json.Marshal(on)
-	tmp := a.stateFile + ".tmp"
+	tmp := file + ".tmp"
 	if err := os.WriteFile(tmp, data, 0o644); err != nil {
 		log.Printf("[ERROR] Arm alert state: %v", err)
 		return
 	}
-	if err := os.Rename(tmp, a.stateFile); err != nil {
+	if err := os.Rename(tmp, file); err != nil {
 		log.Printf("[ERROR] Arm alert state: %v", err)
 	}
 }
 
-// load reads the alerts that were on when the service stopped: they stay on until the whole
-// arm is seen down.
+// load reads the alerts and held-up notices that were on when the service stopped: an alert
+// stays on until the whole arm is seen down, a notice until the arm comes down.
 func (a *ArmAlerts) load() {
-	data, err := os.ReadFile(a.stateFile)
-	if err != nil {
-		return
-	}
-	on := map[string]time.Time{}
-	if err := json.Unmarshal(data, &on); err != nil {
-		log.Printf("[ERROR] Arm alert state %s: %v", a.stateFile, err)
-		return
-	}
-	for ip, since := range on {
+	for ip, since := range readArmState(a.stateFile) {
 		a.arms[ip] = &armState{raisedSince: since}
 		log.Printf("[ARM] %s: the broken arm alert since %s is still on", ip, since.Local().Format("2006-01-02 15:04:05"))
 	}
+	for ip, since := range readArmState(a.heldFile) {
+		if a.arms[ip] == nil {
+			a.arms[ip] = &armState{}
+		}
+		a.arms[ip].heldSince = since
+		log.Printf("[ARM] %s: the arm held up since %s is still noted", ip, since.Local().Format("2006-01-02 15:04:05"))
+	}
+}
+
+func readArmState(file string) map[string]time.Time {
+	on := map[string]time.Time{}
+	data, err := os.ReadFile(file)
+	if err != nil {
+		return on
+	}
+	if err := json.Unmarshal(data, &on); err != nil {
+		log.Printf("[ERROR] Arm alert state %s: %v", file, err)
+	}
+	return on
 }

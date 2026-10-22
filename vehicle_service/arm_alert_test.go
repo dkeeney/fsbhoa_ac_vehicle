@@ -92,3 +92,56 @@ func TestArmAlerts(t *testing.T) {
 		t.Fatalf("the arm repaired after a restart: %v", ev)
 	}
 }
+
+func TestArmHeld(t *testing.T) {
+	dir := t.TempDir()
+	journal, err := NewJournal(filepath.Join(dir, "journal"), 30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	q := &fakeQueue{}
+	a := NewArmAlerts(q, journal, dir)
+	a.heldAfter = 100 * time.Millisecond
+	a.snapshot = func(string) ([]byte, error) { return nil, errors.New("no camera in the test") }
+	a.SetGates(NewGates([]GateConfig{{Name: "South Enter", OverviewIP: "192.0.2.41"}}, nil))
+	ip := "192.0.2.41"
+	at := time.Date(2026, 10, 22, 18, 2, 0, 0, time.Local)
+
+	// A normal cycle: up for less than heldAfter
+	a.HandleState(ip, armDownRegion, true, at)
+	a.HandleState(ip, armDownRegion, false, at.Add(time.Second))
+	time.Sleep(50 * time.Millisecond)
+	a.HandleState(ip, armDownRegion, true, at.Add(2*time.Second))
+	time.Sleep(150 * time.Millisecond)
+	if n := len(q.list()); n != 0 {
+		t.Fatalf("a normal cycle sent %d events", n)
+	}
+
+	// Held up: one notice, not an alarm, timed from when it went up
+	up := at.Add(time.Minute)
+	a.HandleState(ip, armDownRegion, false, up)
+	time.Sleep(200 * time.Millisecond)
+	ev := q.list()
+	if len(ev) != 1 || ev[0]["alert_key"] != "arm_held" || ev[0]["alert_active"] != true || ev[0]["alert_notice"] != true ||
+		ev[0]["alert_text"] != "Arm held up" || ev[0]["event_timestamp"] != "2026-10-22 18:03:00.000" {
+		t.Fatalf("held up: %v", ev)
+	}
+
+	// A restart keeps it noted; the arm coming down ends it, saying for how long
+	b := NewArmAlerts(q, journal, dir)
+	b.heldAfter = a.heldAfter
+	b.snapshot = a.snapshot
+	b.SetGates(NewGates([]GateConfig{{Name: "South Enter", OverviewIP: "192.0.2.41"}}, nil))
+	b.HandleState(ip, armDownRegion, false, up.Add(2*time.Hour))
+	time.Sleep(200 * time.Millisecond)
+	if n := len(q.list()); n != 1 {
+		t.Fatalf("still up after a restart sent %d events, want still 1", n)
+	}
+	b.HandleState(ip, armDownRegion, true, up.Add(2*time.Hour+14*time.Minute))
+	time.Sleep(100 * time.Millisecond)
+	ev = q.list()
+	if len(ev) != 2 || ev[1]["alert_key"] != "arm_held" || ev[1]["alert_active"] != false || ev[1]["alert_notice"] != true ||
+		ev[1]["alert_text"] != "Arm down again (up 2 h 14 min)" {
+		t.Fatalf("down again: %v", ev)
+	}
+}
