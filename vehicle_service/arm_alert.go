@@ -42,8 +42,12 @@ type ArmAlerts struct {
 }
 
 const (
-	armDownRegion   = "arm-down"
-	armTipRegion    = "arm-tip"
+	armDownRegion = "arm-down"
+	armTipRegion  = "arm-tip"
+	armUpRegion   = "arm-up"
+	// The arm takes about 2 s to rise from the lowered arm's box to the raised arm's (South
+	// Enter, 2026-10-22); a rise that took longer than this isn't dated back to its start.
+	armRiseMax      = 5 * time.Second
 	armAlertKey     = "arm_broken"
 	armBrokenAfter  = 3 * time.Minute // the tip goes off about a second before the pivot each time the arm rises, and haze or a car can hide it for a minute or so (North Enter's .11, 2026-10-21)
 	armAlertStateFn = "arm_alerts.json"
@@ -82,6 +86,8 @@ type armState struct {
 	heldSince           time.Time   // the held-up notice is on, since; zero: off
 	carThisUp           bool        // a car has gone through since the arm went up
 	lastUp, lastDown    time.Time   // the last time the arm was up, from and to (ArmUp)
+	raised, hasUpRegion bool        // the "arm-up" region sees the raised arm; the camera has one
+	downOffAt           time.Time   // when "arm-down" last stopped seeing the arm
 	opener              []byte      // the keypad camera's photo from when the arm went up
 }
 
@@ -111,7 +117,7 @@ func (a *ArmAlerts) SetGates(g *Gates) { a.gates.Store(g) }
 
 // HandleState takes one region's settled state from a camera; other regions are ignored.
 func (a *ArmAlerts) HandleState(ip, region string, on bool, at time.Time) {
-	if region != armDownRegion && region != armTipRegion {
+	if region != armDownRegion && region != armTipRegion && region != armUpRegion {
 		return
 	}
 	a.mu.Lock()
@@ -121,17 +127,25 @@ func (a *ArmAlerts) HandleState(ip, region string, on bool, at time.Time) {
 		s = &armState{}
 		a.arms[ip] = s
 	}
-	if region == armDownRegion {
+	switch region {
+	case armDownRegion:
 		s.down, s.downKnown = on, true
-		a.armHeld(ip, s, on, at)
-	} else {
+		if !on {
+			s.downOffAt = at
+		}
+	case armUpRegion:
+		s.raised, s.hasUpRegion = on, true
+	default:
 		s.tip, s.tipKnown = on, true
 	}
+	a.followArm(ip, s, at)
 	if !s.downKnown || !s.tipKnown {
 		return
 	}
 
-	if s.down && !s.tip {
+	// Down without its tip is a broken arm, unless the raised arm is in view (a white truck
+	// body under the lowered arm's box)
+	if s.down && !s.tip && !s.raised {
 		if s.brokenSince.IsZero() {
 			s.brokenSince = at
 			since := at
@@ -156,6 +170,36 @@ func (a *ArmAlerts) HandleState(ip, region string, on bool, at time.Time) {
 		a.save()
 		go a.send(ip, false, at) // not under the lock: it may fetch a snapshot
 	}
+}
+
+// followArm works out whether the arm is up or down from its regions, and passes a change on
+// to armHeld (called with a.mu held). With an "arm-up" region on the raised arm (South Enter,
+// 2026-10-22, where the raised arm's red and white stripes stand against the grass and curb),
+// the arm is up when that region sees it, whatever "arm-down" says (on 2026-10-20 a white chip
+// box passing under the lowered arm's box read as the arm, down, with the arm up); down when
+// only "arm-down" sees it; and where it was when neither does: moving (about 2 s each way) or
+// hidden behind a vehicle. A rise is dated from when "arm-down" stopped seeing the arm. Without
+// an "arm-up" region, the arm is up whenever "arm-down" doesn't see it.
+func (a *ArmAlerts) followArm(ip string, s *armState, at time.Time) {
+	var up bool
+	switch {
+	case s.hasUpRegion && s.raised:
+		up = true
+	case s.downKnown && s.down:
+		up = false
+	case s.hasUpRegion || !s.downKnown:
+		return // moving, hidden, or not known yet: where it was
+	default:
+		up = true
+	}
+	if up == !s.upSince.IsZero() {
+		return
+	}
+	when := at
+	if up && s.hasUpRegion && !s.downOffAt.IsZero() && !s.downOffAt.After(at) && at.Sub(s.downOffAt) <= armRiseMax {
+		when = s.downOffAt
+	}
+	a.armHeld(ip, s, !up, when)
 }
 
 // armHeld follows the arm going up and coming down, for the held-up notice and the cars that

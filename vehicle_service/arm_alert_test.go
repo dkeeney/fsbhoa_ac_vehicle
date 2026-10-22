@@ -206,3 +206,44 @@ func TestArmCarCrossed(t *testing.T) {
 		t.Fatalf("down again: %v", ev)
 	}
 }
+
+// With an "arm-up" region: a white truck body in the lowered arm's box doesn't bring the arm
+// down while the raised arm is seen, the arm moving (neither region) keeps its position, and a
+// rise is dated from when "arm-down" stopped seeing it.
+func TestArmUpRegion(t *testing.T) {
+	dir := t.TempDir()
+	journal, err := NewJournal(filepath.Join(dir, "journal"), 30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := NewArmAlerts(&fakeQueue{}, journal, dir)
+	a.snapshot = func(string) ([]byte, error) { return nil, errors.New("no camera in the test") }
+	a.SetGates(NewGates([]GateConfig{{Name: "South Enter", OverviewIP: "192.0.2.41"}}, nil))
+	ip, lane := "192.0.2.41", "South Enter"
+	at := time.Date(2026, 10, 22, 12, 29, 0, 0, time.Local)
+	sec := func(n int) time.Time { return at.Add(time.Duration(n) * time.Second) }
+
+	a.HandleState(ip, armDownRegion, true, sec(0))
+	a.HandleState(ip, armUpRegion, false, sec(0))
+	a.HandleState(ip, armDownRegion, false, sec(10)) // starts rising
+	if a.ArmUp(lane, sec(11)) {
+		t.Fatal("up while rising, before the raised arm is seen")
+	}
+	a.HandleState(ip, armUpRegion, true, sec(12)) // fully up
+	if !a.ArmUp(lane, sec(10)) || a.ArmUp(lane, sec(9)) {
+		t.Fatal("the rise isn't dated from when the lowered arm's box emptied")
+	}
+	a.HandleState(ip, armDownRegion, true, sec(20)) // a white truck body in the lowered arm's box
+	if !a.ArmUp(lane, sec(21)) {
+		t.Fatal("a truck body brought the arm down while the raised arm was seen")
+	}
+	a.HandleState(ip, armDownRegion, false, sec(25))
+	a.HandleState(ip, armUpRegion, false, sec(40)) // coming down
+	if !a.ArmUp(lane, sec(41)) {
+		t.Fatal("down while still coming down")
+	}
+	a.HandleState(ip, armDownRegion, true, sec(42)) // down
+	if a.ArmUp(lane, sec(43)) || !a.ArmUp(lane, sec(41)) {
+		t.Fatal("not down once the lowered arm is seen, or the last up period lost")
+	}
+}
