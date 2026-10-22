@@ -38,9 +38,11 @@ type PlateRead struct {
 	SceneFile    string
 	PlateArrived time.Time
 	SceneArrived time.Time
-	Missing      string // "plate" or "scene"
-	Note         string // for the card, such as "Arm already up 2 min 56 s"; "" for none
-	NotePhoto    []byte // goes with the note
+	Missing      string    // "plate" or "scene"
+	Note         string    // for the card, such as "Arm already up 2 min 56 s"; "" for none
+	NotePhoto    []byte    // goes with the note
+	CarCamera    string    // the camera that counted the car this read belongs to; "" for none
+	CarStart     time.Time // when that car entered "beyond": its overview photo is taken from it
 }
 
 // sceneShrink is how much the scene photo (2592 x 1520, about 1 MB) is reduced in each
@@ -121,7 +123,17 @@ func (p *PlateEvents) Send(r PlateRead) bool {
 	// The overview camera's photo of the car at the gate, taken a few seconds before the
 	// capture (photo.go). Only with the camera's capture time: arrival is too late to say.
 	var overview []byte
-	if p.photos != nil && r.Gate != "" {
+	if p.photos != nil && r.CarCamera != "" && !r.CarStart.IsZero() {
+		// The car counted for this read: the frame just before it entered "beyond", the
+		// same place in the picture whatever its speed (the user, 2026-10-22: from the
+		// capture, a fixed lead suits only cars of one speed)
+		var at time.Time
+		if overview, at = p.photos.Near(r.CarCamera, r.CarStart.Add(-countPhotoBefore)); overview != nil {
+			details["overview_photo_at"] = at.Format(time.RFC3339Nano)
+			details["overview_photo_from"] = "count"
+		}
+	}
+	if overview == nil && p.photos != nil && r.Gate != "" {
 		if capture, err := time.ParseInLocation("2006-01-02 15:04:05.000", lprCaptureTimeText(r.CaptureTime), time.Local); err == nil {
 			var at time.Time
 			if overview, at = p.photos.ForRead(r.Gate, direction, capture); overview != nil {
@@ -157,10 +169,11 @@ func (p *PlateEvents) Send(r PlateRead) bool {
 	return true
 }
 
-// unreadPhotoBefore: an unread car's photo is the frame this long before it entered "beyond".
-// A plate read's photo is overviewPhotoLead (4 s) before its capture, which is about 3.5 s
-// after the car enters "beyond" at South Enter (2026-10-21 and 22).
-const unreadPhotoBefore = 500 * time.Millisecond
+// countPhotoBefore: a counted car's photo, read or not, is the frame this long before it
+// entered "beyond": the whole car, front on, at South Enter, for fast and slow cars alike
+// (2026-10-22, five cars from 0.5 to 6 s in "beyond"). A read without a counted car keeps
+// its lane's lead from the capture (overviewPhotoLead, 4 s, or auto).
+const countPhotoBefore = 500 * time.Millisecond
 
 // SendUnread queues a car that came in with no plate read (unread.go) as a vehicle event with
 // no plate and only the overview photo, when the setting is on, so the monitor has an entry
@@ -182,7 +195,7 @@ func (p *PlateEvents) SendUnread(c unreadCar) bool {
 	var overview []byte
 	if p.photos != nil {
 		var at time.Time
-		if overview, at = p.photos.Near(c.camera, c.start.Add(-unreadPhotoBefore)); overview != nil {
+		if overview, at = p.photos.Near(c.camera, c.start.Add(-countPhotoBefore)); overview != nil {
 			details["overview_photo_at"] = at.Format(time.RFC3339Nano)
 		}
 	}

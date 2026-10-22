@@ -79,11 +79,11 @@ func TestUnreadCarsNote(t *testing.T) {
 	u, r := newTestUnread()
 	now := time.Now()
 	u.Car("192.168.107.141", "South Enter", now.Add(-time.Second), now, now.Add(time.Second), time.Second, "Arm already up 2 min 56 s", []byte("photo"))
-	if note, photo := u.Read("South Enter", now.Add(3*time.Second)); note != "" || photo != nil {
-		t.Fatalf("a read outside the window got the note: %q", note)
+	if c := u.Read("South Enter", now.Add(3*time.Second)); c.note != "" || c.notePhoto != nil {
+		t.Fatalf("a read outside the window got the note: %q", c.note)
 	}
-	if note, photo := u.Read("South Enter", now.Add(500*time.Millisecond)); note != "Arm already up 2 min 56 s" || string(photo) != "photo" {
-		t.Fatalf("the car's read: %q %q", note, photo)
+	if c := u.Read("South Enter", now.Add(500*time.Millisecond)); c.note != "Arm already up 2 min 56 s" || string(c.notePhoto) != "photo" || c.start.IsZero() {
+		t.Fatalf("the car's read: %+v", c)
 	}
 	time.Sleep(1200 * time.Millisecond)
 	if got := r.got(); len(got) != 0 {

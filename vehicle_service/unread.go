@@ -144,9 +144,18 @@ func (u *UnreadCars) Car(camera, gate string, approach, start, end time.Time, af
 	time.AfterFunc(time.Until(start.Add(after+u.settle)), func() { u.decide(c) })
 }
 
-// Read takes an LPR camera's read at a lane, by its capture time, and returns the note for
-// its card and the note's photo, when the read is a counted car's that has one.
-func (u *UnreadCars) Read(gate string, capture time.Time) (string, []byte) {
+// readCar is what a read learns from the counted car it is matched with.
+type readCar struct {
+	note      string    // for its card, such as "Arm already up 2 min 56 s"; "" for none
+	notePhoto []byte    // goes with the note
+	camera    string    // the camera that counted it; "" when the read matched no car
+	start     time.Time // when it entered "beyond", for its overview photo
+}
+
+// Read takes an LPR camera's read at a lane, by its capture time, and returns the counted car
+// it belongs to: its note and the note's photo, and when and by which camera it was seen
+// entering "beyond". Empty when no counted car is waiting for it.
+func (u *UnreadCars) Read(gate string, capture time.Time) readCar {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	l := u.lane(gate)
@@ -159,7 +168,7 @@ func (u *UnreadCars) Read(gate string, capture time.Time) (string, []byte) {
 		if c.matches(capture) {
 			c.done = true
 			l.cars = append(l.cars[:i], l.cars[i+1:]...)
-			return c.note, c.notePhoto
+			return readCar{note: c.note, notePhoto: c.notePhoto, camera: c.camera, start: c.start}
 		}
 	}
 	l.reads = append(l.reads, capture)
@@ -169,7 +178,7 @@ func (u *UnreadCars) Read(gate string, capture time.Time) (string, []byte) {
 		drop++
 	}
 	l.reads = append(l.reads[:0:0], l.reads[drop:]...)
-	return "", nil
+	return readCar{}
 }
 
 // decide reports a car whose window has passed without a read.
