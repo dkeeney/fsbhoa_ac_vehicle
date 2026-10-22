@@ -10,6 +10,18 @@ The car count (`vehicle_service/count.go`) only knows that pixels changed in two
 
 Read-only, 2026-10-22 11:35: Frigate 0.17.2, the OpenVINO detector on the Intel GPU at 6.8 ms an inference (about 145 a second), now doing about 43 a second for the five pool cameras (about 30% busy). Frigate uses 2.1 of the i5-13500H's 16 threads (the whole system 14%, load 3.4), 18 GB of 23 free, 326 GB of disk free. .141 at 10 frames a second would add up to about 15 to 20 detections a second while vehicles move (about 40% busy in all). The alarm box reaches .141 through the main router and the south gates' NanoBeam link (3 to 18 ms), not the pool's; its second stream is about 0.5 to 1 Mbit/s, a fraction of the 4K stream the NVR already takes over that link.
 
+## A Frigate of its own for the gates
+
+The user's preference (2026-10-22): keep the gates apart from the pool alarm. A second Frigate container on the same machine does that, at the cost of about 2 to 3 GB of memory (18 GB free) and one more container to keep updated. The existing one (read 2026-10-22) runs in the Docker network `fsbhoa_intrusion_frigate_net` with its config in `~/fsbhoa_intrusion/`, its API on 127.0.0.1:5000, its web page on 8971, go2rtc on 8554 and 8555, `/dev/dri` for the GPU, and Mosquitto on 1883 in the same network. The gates' instance:
+
+- its own folder, `~/fsbhoa_gates/` (a `docker-compose.yml`, `config/config.yml`, no recordings), and its own Docker network;
+- its own Mosquitto, published on 1884, so the intrusion listener never sees a gate event, whatever it filters on;
+- its API on 127.0.0.1:5001 and its web page on 8972; go2rtc's ports not published;
+- `/dev/dri` shared: each instance loads its own copy of the detection model on the GPU (OpenVINO). At today's load (about 43 detections a second for the pool, up to about 20 for the gate, against about 145) that fits.
+- Restarts and upgrades of either leave the other alone. They still share the machine, the GPU and its driver: a GPU hang or a reboot stops both. If the gates grow (North Enter's cameras), a small PC of their own removes that.
+
+The pool's GPU decoding crashes of 2026-10-22 morning were a configuration issue, resolved since (the user).
+
 ## The camera block
 
 The Reolink login (the "All other cameras" line of the passwords file, `admin`) goes in two environment variables of the Frigate container, `FRIGATE_REOLINK_USER` and `FRIGATE_REOLINK_PASSWORD`, not in the file. Coordinates are pixels of the 640 x 360 detect stream, from the zones in the vehicle settings (Car Count Zones).
@@ -47,19 +59,19 @@ cameras:
 
 To check against the running `frigate.yml` before it goes in: whether the pool cameras use a global `hwaccel_args` (VAAPI, which crashed for two of them early on 2026-10-22). This camera's small stream decodes cheaply on the CPU, so it could leave the GPU decoder alone; the exact override is to be taken from Frigate 0.17's documentation and the existing file.
 
-## The intrusion listener must ignore it
+## The intrusion listener
 
-`fsbhoa_intrusion`'s Go listener calls the PBX on Frigate detections. Before the camera goes in, confirm with that project that the listener acts only on its pool cameras (or zones), so a person or car at South Enter can never raise a pool alarm. If it filters by label or zone alone, it needs a camera filter first.
+`fsbhoa_intrusion`'s Go listener calls the PBX on Frigate detections. With the gates on their own Frigate and Mosquitto it never receives a gate event. (Had the camera gone into the pool's Frigate, the listener would have needed to act only on its pool cameras.)
 
 ## What the testbed does with it
 
-`vehicle_service` subscribes, read-only, to `frigate/events` on the alarm box's Mosquitto (port 1883) and journals each event for `south_enter` (`frigate_event`: the object's ID, label, the zones it entered, start and end), next to its own counts and the plate reads. For a week nothing else changes; then the counts are compared: per vehicle against the plates, close followers, trucks with trailers, bicycles, night. If Frigate's tracks hold up, a vehicle entering "beyond" after "approach" replaces the pixel count (`car` events), and the arm stays with the bar regions (or a small trained classifier, if they fail at night). It needs a Go MQTT client in `vehicle_service` and an MQTT setting; the testbed never publishes.
+`vehicle_service` subscribes, read-only, to `frigate/events` on the gates' Mosquitto (port 1884) and journals each event for `south_enter` (`frigate_event`: the object's ID, label, the zones it entered, start and end), next to its own counts and the plate reads. For a week nothing else changes; then the counts are compared: per vehicle against the plates, close followers, trucks with trailers, bicycles, night. If Frigate's tracks hold up, a vehicle entering "beyond" after "approach" replaces the pixel count (`car` events), and the arm stays with the bar regions (or a small trained classifier, if they fail at night). It needs a Go MQTT client in `vehicle_service` and an MQTT setting; the testbed never publishes.
 
 A trailer may come out as a second truck, or not at all: the standard model has no trailer class. The week will show which; if it's the first, a model trained on .141's kept passes (full size since 2026-10-22) with a trailer class is the next step.
 
 ## Steps, once approved
 
-1. The intrusion session confirms the listener ignores `south_enter`, and changes it if needed.
-2. Outside 22:30 to 04:40: add the two environment variables to the Frigate container, add the camera block, restart Frigate, and watch the pool cameras (fps, detector, no ffmpeg crashes) for an hour.
+1. Write `~/fsbhoa_gates/` on alarm (compose file, config, the Reolink login in an `.env` file readable only by `fsbhoa`), reviewed with the intrusion session.
+2. Outside 22:30 to 04:40: start the gates' containers (the pool's Frigate isn't touched or restarted) and watch the pool cameras (fps, detector speed, no ffmpeg crashes) for an hour.
 3. Build and install the MQTT journaling in `vehicle_service`.
 4. A week later: compare and decide.
