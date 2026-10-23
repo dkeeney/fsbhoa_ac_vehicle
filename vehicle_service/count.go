@@ -66,11 +66,17 @@ const (
 	countBackground         = 40   // frames in the background's median (every other frame: the last 40 s; 20 s until 2026-10-23, when a car waiting 10 s at the keypad or the arm faded into it)
 	countWarmup             = 10   // frames before counting starts
 	countApproachWindow     = 8 * time.Second
-	// A car whose part in "beyond" ends this much nearer "approach" (in 1/160 of the picture's
-	// width or 1/90 of its height) than where it entered went back: it reached the arm and reversed (2026-10-22
-	// 13:08, an SUV: in "beyond" its center went 115 to 101 across as it backed to the keypad,
-	// where a car going in leaves at the far side, 99 to 149).
-	countWentBack = 4
+	// The lane's front (lanePath): a car whose front falls back this far along the lane (the
+	// middle of "approach" 0, of "beyond" 1) in steps of at most countPathJump, while it is still
+	// in view, reached past the arm and reversed (2026-10-22 13:08, an SUV: its front went 1.02
+	// to 0.27 in steps of up to 0.18; cars going in reach 1.4 to 1.6 and leave the picture).
+	// A bigger step is another object (the next car, or the arm coming down behind a car that
+	// left: 1.38 to 0.85 at 18:46 that night). After "beyond" empties, the reversal is waited for
+	// up to countPathWait.
+	countWentBack   = 0.45
+	countPathJump   = 0.35
+	countPathWait   = 5 * time.Second
+	countPathMargin = 2
 
 	// A back-out whose time in "approach" (from this much before it to this much after) holds
 	// the arm coming down was the arm (classify)
@@ -267,10 +273,107 @@ type zoneCounter struct {
 	beyondStart          time.Time
 	beyondFromApproach   bool
 	beyondPeak, apprPeak float64
-	approachCenter       [2]float64 // the middle of "approach"; set on the first frame
-	beyondFirst          float64    // how far from approachCenter the "beyond" part was when it filled
-	beyondLast           float64    // and the last time it was full
+	path                 lanePath
+	pending              *countEvent // "beyond" emptied: a car in, unless it reverses (decided within countPathWait)
+	reversedInBeyond     bool        // the front fell back while "beyond" was full
+	backMax, backFront   float64     // how far it got and where it fell back to, for the journal
 }
+
+// lanePath follows the front of what is in the lane (both zones): the 90th percentile of the
+// positions of the biggest group of touching changed blocks, along the line from the middle of
+// "approach" (0) to the middle of "beyond" (1), and the furthest it got since it was last
+// picked up. Only the biggest group, so something left over elsewhere in the lane (a shadow
+// that moved) doesn't hold the front.
+type lanePath struct {
+	union          []bool // both zones, and countPathMargin blocks around them (they don't touch: a car across the arm is one group)
+	a0, a1         [2]float64
+	min            int // fewer changed blocks than this: nothing in the lane
+	on             bool
+	front, maxSeen float64
+}
+
+func newLanePath(approach, beyond []bool) lanePath {
+	p := lanePath{union: make([]bool, len(approach)), a0: maskCenter(approach), a1: maskCenter(beyond)}
+	n := 0
+	for i := range approach {
+		if !approach[i] && !beyond[i] {
+			continue
+		}
+		n++
+		x, y := i%blocksW, i/blocksW
+		for dy := -countPathMargin; dy <= countPathMargin; dy++ {
+			for dx := -countPathMargin; dx <= countPathMargin; dx++ {
+				if x+dx >= 0 && x+dx < blocksW && y+dy >= 0 && y+dy < blocksH {
+					p.union[(y+dy)*blocksW+x+dx] = true
+				}
+			}
+		}
+	}
+	p.min = max(4, n/20)
+	return p
+}
+
+// update takes a frame's changed blocks, and reports whether the front was picked up anew
+// (after nothing in the lane, or another object).
+func (p *lanePath) update(changed []bool) bool {
+	dx, dy := p.a1[0]-p.a0[0], p.a1[1]-p.a0[1]
+	l2 := dx*dx + dy*dy
+	var ss []float64
+	for _, i := range biggestGroup(changed, p.union) {
+		if l2 == 0 {
+			break
+		}
+		x := (float64(i%blocksW) + 0.5) * 160 / blocksW
+		y := (float64(i/blocksW) + 0.5) * 90 / blocksH
+		ss = append(ss, ((x-p.a0[0])*dx+(y-p.a0[1])*dy)/l2)
+	}
+	if len(ss) < p.min {
+		p.on = false
+		return false
+	}
+	sort.Float64s(ss)
+	f := ss[len(ss)*9/10]
+	picked := !p.on || math.Abs(f-p.front) > countPathJump
+	if picked {
+		p.on, p.maxSeen = true, f
+	}
+	p.front, p.maxSeen = f, math.Max(p.maxSeen, f)
+	return picked
+}
+
+// biggestGroup is the biggest group of changed blocks inside a mask that touch side by side.
+func biggestGroup(changed, mask []bool) []int {
+	seen := make([]bool, len(changed))
+	var best []int
+	for i := range changed {
+		if !changed[i] || !mask[i] || seen[i] {
+			continue
+		}
+		group := []int{i}
+		seen[i] = true
+		for k := 0; k < len(group); k++ {
+			j := group[k]
+			x, y := j%blocksW, j/blocksW
+			for _, n := range [4][2]int{{x - 1, y}, {x + 1, y}, {x, y - 1}, {x, y + 1}} {
+				if n[0] < 0 || n[0] >= blocksW || n[1] < 0 || n[1] >= blocksH {
+					continue
+				}
+				m := n[1]*blocksW + n[0]
+				if changed[m] && mask[m] && !seen[m] {
+					seen[m] = true
+					group = append(group, m)
+				}
+			}
+		}
+		if len(group) > len(best) {
+			best = group
+		}
+	}
+	return best
+}
+
+// reversed reports whether the front has fallen back countWentBack from the furthest it got.
+func (p *lanePath) reversed() bool { return p.on && p.front <= p.maxSeen-countWentBack }
 
 type countEvent struct {
 	kind                 string
@@ -299,11 +402,24 @@ func (z *zoneCounter) step(t time.Time, g []uint8) []countEvent {
 	}
 	changed := blockChanges(g, bg)
 	a, b := zoneShares(changed, z.approach, z.beyond)
-	if z.approachCenter == [2]float64{} {
-		z.approachCenter = maskCenter(z.approach)
+	if z.path.union == nil {
+		z.path = newLanePath(z.approach, z.beyond)
 	}
+	picked := z.path.update(changed)
 	var events []countEvent
 	ts := func(t time.Time) string { return t.Local().Format(journalTimeFormat) }
+
+	// "beyond" emptied: decided when it reverses (went back), or leaves, or is replaced by
+	// another object (a car in), or "beyond" fills again, or countPathWait passes
+	if z.pending != nil {
+		if z.path.reversed() {
+			events = append(events, z.wentBack(*z.pending))
+			z.pending = nil
+		} else if !z.path.on || picked || b >= z.bOn || t.Sub(z.pending.end) > countPathWait {
+			events = append(events, *z.pending)
+			z.pending = nil
+		}
+	}
 
 	if a >= z.aOn && !z.approachOn {
 		if z.backedPending {
@@ -324,9 +440,7 @@ func (z *zoneCounter) step(t time.Time, g []uint8) []countEvent {
 		z.apprPeak = math.Max(z.apprPeak, a)
 	}
 	if b >= z.bOn && !z.beyondOn {
-		z.beyondOn, z.beyondStart, z.beyondPeak = true, t, 0
-		z.beyondFirst = z.beyondDistance(changed)
-		z.beyondLast = z.beyondFirst
+		z.beyondOn, z.beyondStart, z.beyondPeak, z.reversedInBeyond = true, t, 0, false
 		// After an approach: a car came in. Without one: something else (a pedestrian, a
 		// shadow, or a car backing out through the gate)
 		z.beyondFromApproach = z.approachOn || (!z.approachLast.IsZero() && t.Sub(z.approachLast) <= z.window)
@@ -336,8 +450,8 @@ func (z *zoneCounter) step(t time.Time, g []uint8) []countEvent {
 	}
 	if z.beyondOn {
 		z.beyondPeak = math.Max(z.beyondPeak, b)
-		if b >= z.bOn/2 {
-			z.beyondLast = z.beyondDistance(changed)
+		if z.path.reversed() && !z.reversedInBeyond {
+			z.reversedInBeyond, z.backMax, z.backFront = true, z.path.maxSeen, z.path.front
 		}
 	}
 	if b < z.bOn/2 && z.beyondOn {
@@ -349,20 +463,16 @@ func (z *zoneCounter) step(t time.Time, g []uint8) []countEvent {
 			"beyond_peak":  math.Round(z.beyondPeak*100) / 100,
 		}
 		e := countEvent{kind: kind, data: data, start: z.beyondStart, end: t}
-		if z.beyondLast < z.beyondFirst-countWentBack {
-			// It left "beyond" back toward the arm: it reached the arm and reversed
-			data["went_back"] = true
-			if z.beyondFromApproach {
-				e.kind = "car_backed"
-				data["approach_start"] = ts(z.approachStart)
-				e.approach = z.approachStart
-			}
-		} else if z.beyondFromApproach {
+		if z.beyondFromApproach {
 			e.kind = "car"
 			data["approach_start"] = ts(z.approachStart)
-			e.approach, e.start, e.end = z.approachStart, z.beyondStart, t
+			e.approach = z.approachStart
 		}
-		events = append(events, e)
+		if z.reversedInBeyond || z.path.reversed() {
+			events = append(events, z.wentBack(e)) // already falling back toward the arm
+		} else {
+			z.pending = &e
+		}
 	}
 	if a < z.aOn/2 && z.approachOn {
 		z.approachOn = false
@@ -381,20 +491,19 @@ func (z *zoneCounter) step(t time.Time, g []uint8) []countEvent {
 	return events
 }
 
-// beyondDistance is how far the middle of what changed in "beyond" is from the middle of
-// "approach", in 1/160 of the picture's width and 1/90 of its height; 0 when nothing changed.
-func (z *zoneCounter) beyondDistance(changed []bool) float64 {
-	in := make([]bool, len(changed))
-	any := false
-	for i := range changed {
-		in[i] = changed[i] && z.beyond[i]
-		any = any || in[i]
+// wentBack makes a "beyond" pass that reversed toward the arm a car that backed out (or, with
+// no approach before it, a beyond_only that went back).
+func (z *zoneCounter) wentBack(e countEvent) countEvent {
+	if !z.reversedInBeyond {
+		z.backMax, z.backFront = z.path.maxSeen, z.path.front
 	}
-	if !any {
-		return 0
+	e.data["went_back"] = true
+	e.data["front_max"] = math.Round(z.backMax*100) / 100
+	e.data["front_back"] = math.Round(z.backFront*100) / 100
+	if e.kind == "car" {
+		e.kind = "car_backed"
 	}
-	c := maskCenter(in)
-	return math.Hypot(c[0]-z.approachCenter[0], c[1]-z.approachCenter[1])
+	return e
 }
 
 // maskCenter is the middle of a block mask, in 1/160 of the picture's width and 1/90 of its height.
