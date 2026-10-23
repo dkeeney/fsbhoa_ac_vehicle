@@ -46,6 +46,7 @@ type CountZone struct {
 	Points [][2]float64 `json:"points"`
 	On     float64      `json:"on,omitempty"`     // the zone is full at this share; 0: countOnShare (empty at half)
 	Window float64      `json:"window,omitempty"` // approach only: seconds a car may take to reach "beyond"; 0: countApproachWindow
+	Jump   float64      `json:"jump,omitempty"`   // approach only: how far the picture may move before a frame is skipped; 0: countExposureJump
 	Plate  float64      `json:"plate,omitempty"`  // beyond only: seconds after a car enters "beyond" its plate read may be captured; 0: no check (unread.go)
 	Photo  float64      `json:"photo,omitempty"`  // beyond only: the same matching, only for the read's overview photo (no cars reported unread); 0: none
 }
@@ -118,10 +119,13 @@ func (c *CarCounter) SetZones(zones []CountZone) {
 		c.cameras[ip] = &zoneCounter{
 			ip: ip, approachZone: ap, beyondZone: be,
 			approach: polygonMask(ap.Points), beyond: polygonMask(be.Points),
-			aOn: shareOr(ap.On), bOn: shareOr(be.On), window: countApproachWindow,
+			aOn: shareOr(ap.On), bOn: shareOr(be.On), window: countApproachWindow, jump: countExposureJump,
 		}
 		if ap.Window > 0 {
 			c.cameras[ip].window = time.Duration(ap.Window * float64(time.Second))
+		}
+		if ap.Jump > 0 {
+			c.cameras[ip].jump = int(ap.Jump)
 		}
 		log.Printf("[COUNT] Counting cars on %s", ip)
 	}
@@ -129,7 +133,7 @@ func (c *CarCounter) SetZones(zones []CountZone) {
 
 func sameZones(z map[string]CountZone, approach, beyond CountZone) bool {
 	eq := func(a, b CountZone) bool {
-		if len(a.Points) != len(b.Points) || a.On != b.On || a.Window != b.Window || a.Plate != b.Plate || a.Photo != b.Photo {
+		if len(a.Points) != len(b.Points) || a.On != b.On || a.Window != b.Window || a.Jump != b.Jump || a.Plate != b.Plate || a.Photo != b.Photo {
 			return false
 		}
 		for i := range a.Points {
@@ -231,6 +235,7 @@ type zoneCounter struct {
 	approach, beyond     []bool        // masks, countWidth x countHeight
 	aOn, bOn             float64       // each zone is full at this share, and empty below half of it
 	window               time.Duration // how long after "approach" a car may reach "beyond"
+	jump                 int           // a frame whose whole picture moved more than this from the background is skipped
 	backedPending        bool          // "approach" emptied without "beyond": backed out, unless "beyond" fills within the window
 	history              [][]uint8
 	frames               int
@@ -264,7 +269,7 @@ func (z *zoneCounter) step(t time.Time, g []uint8) []countEvent {
 		return nil
 	}
 	bg := background(z.history)
-	if exposureJump(g, bg) {
+	if exposureJump(g, bg, z.jump) {
 		return nil // the camera changed its exposure: the whole picture differs, not a car
 	}
 	a, b := zoneShares(g, bg, z.approach, z.beyond)
@@ -452,19 +457,23 @@ func differingShare(g, bg []uint8) float64 {
 }
 
 // countExposureJump is how far (of 255) the whole picture's median may move from the
-// background before a frame is skipped: .11, in glare, now and then gives one frame far darker.
+// background before a frame is skipped: .11, in glare, now and then gives one frame far darker
+// (28 to 69 in its recordings of 2026-10-20 and 21). A camera's approach line can set its own
+// (jump=): South Enter's Reolink darkens its whole picture by 28 to 35 for a white car close by
+// in "beyond", so with 25 those cars' frames were skipped and they were journaled as backed out
+// (9 in the Bingo hold of 2026-10-22, 17:00 to 18:13).
 const countExposureJump = 25
 
 // exposureJump reports whether a frame's median brightness differs from the background's by
-// more than countExposureJump.
-func exposureJump(g, bg []uint8) bool {
+// more than limit.
+func exposureJump(g, bg []uint8, limit int) bool {
 	d := make([]int, len(g))
 	for i := range g {
 		d[i] = int(g[i]) - int(bg[i])
 	}
 	sort.Ints(d)
 	m := d[len(d)/2]
-	return m > countExposureJump || m < -countExposureJump
+	return m > limit || m < -limit
 }
 
 // zoneShares is the share of each zone's pixels that differ from the background, beyond the

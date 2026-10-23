@@ -27,6 +27,7 @@ func newTestCounter() *zoneCounter {
 		aOn:      countOnShare,
 		bOn:      countOnShare,
 		window:   countApproachWindow,
+		jump:     countExposureJump,
 	}
 }
 

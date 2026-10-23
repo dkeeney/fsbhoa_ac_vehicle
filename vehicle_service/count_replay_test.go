@@ -22,7 +22,7 @@ func TestCountReplay(t *testing.T) {
 	if dir == "" {
 		t.Skip("COUNT_REPLAY_DIR not set")
 	}
-	// Lines as in the setting, without the camera: "approach|beyond <x> <y> ... [on=<share>] [window=<s>]"
+	// Lines as in the setting, without the camera: "approach|beyond <x> <y> ... [on=<share>] [window=<s>] [jump=<n>]"
 	var zones []CountZone
 	for _, line := range strings.Split(os.Getenv("COUNT_REPLAY_ZONES"), "\n") {
 		f := strings.Fields(line)
@@ -39,6 +39,8 @@ func TestCountReplay(t *testing.T) {
 					zone.On = x
 				} else if k == "window" {
 					zone.Window = x
+				} else if k == "jump" {
+					zone.Jump = x
 				}
 				continue
 			}
