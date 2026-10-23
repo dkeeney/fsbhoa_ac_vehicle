@@ -43,7 +43,8 @@ cameras:
   south_enter:
     ffmpeg:
       inputs:
-        - path: rtsp://{FRIGATE_REOLINK_USER}:{FRIGATE_REOLINK_PASSWORD}@192.168.107.141:554/h264Preview_01_sub
+        - path: "http://192.168.107.141/flv?port=1935&app=bcs&stream=channel0_ext.bcs&user={FRIGATE_REOLINK_USER}&password={FRIGATE_REOLINK_PASSWORD}"
+          input_args: preset-http-reolink
           roles: [detect]
     detect:
       width: 640
@@ -87,3 +88,8 @@ A trailer may come out as a second truck, or not at all: the standard model has 
 2. Outside 22:30 to 04:40: start the gates' containers (the pool's Frigate isn't touched or restarted) and watch the pool cameras (fps, detector speed, no ffmpeg crashes) for an hour.
 3. Build and install the MQTT journaling in `vehicle_service`.
 4. A week later: compare and decide.
+
+## The stream: HTTP-FLV since 2026-10-23 10:19
+
+Until then Frigate read the RTSP sub stream (`rtsp://...:554/h264Preview_01_sub`, 640 x 360). Its ffmpeg timed out ("Error during demuxing: Connection timed out") about every 2 minutes in spells: 2026-10-22 13:54 to 14:19 and 16:23 to 17:29; 2026-10-23 03:40 to 05:01 and 09:23 to 10:06, about 110 restarts in 22 hours, each losing some seconds of video. The pool's Reolink (Pool_farside) showed the same rhythm over a different link (the intrusion session, 2026-10-23), so it looks like Reolink RTSP behavior, not one bad link. Frigate's camera docs recommend Reolink's HTTP-FLV stream. The RLC-810A offers over FLV only `channel0_main.bcs` and `channel0_ext.bcs` (896 x 512, 25 fps; `channel0_sub.bcs` doesn't answer), so Frigate reads ext with `preset-http-reolink` and scales it to the 640 x 360 detect size (the shapes differ by under 2%; the zones line up). The RTSP config is kept on alarm as `config/config.yml.rtsp-2026-10-23`. First 31 minutes (10:19 to 10:50): no ffmpeg restart, 10 fps processed, none skipped, inference 8.7 to 9.4 ms. **For the week's comparison:** before 10:19 on 2026-10-23, Frigate's misses include the RTSP gaps.
+
