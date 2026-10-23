@@ -288,6 +288,14 @@ func (a *ArmAlerts) ArmUp(gate string, at time.Time) bool {
 	return !s.lastUp.IsZero() && !s.lastUp.After(at) && !s.lastDown.Before(at)
 }
 
+// ArmCameDown reports whether a lane's arm was last seen coming down between from and to.
+func (a *ArmAlerts) ArmCameDown(gate string, from, to time.Time) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	_, s := a.laneArm(gate)
+	return s != nil && !s.lastDown.IsZero() && !s.lastDown.Before(from) && !s.lastDown.After(to)
+}
+
 // laneArm returns the camera watching a lane's arm, and its state (called with a.mu held).
 func (a *ArmAlerts) laneArm(gate string) (string, *armState) {
 	g := a.gates.Load()

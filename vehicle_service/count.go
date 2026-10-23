@@ -18,9 +18,11 @@ import (
 // the arm, and "beyond", past the arm. A car is counted when "beyond" fills after "approach"
 // did. A car seen only in "approach" backed out (at the keypad, or at the arm): it didn't
 // come in. Each zone is compared with a background, the median of the last few seconds'
-// frames, so a parked or waiting car becomes background only after a while.
+// frames, so a parked or waiting car becomes background only after a while. The comparison is
+// by texture, block by block (blockChanges): headlights on the pavers and the camera darkening
+// its picture for a white car change brightness, not the pavers' pattern.
 //
-// Everything is journaled ("car", "car_backed", "beyond_only") and nothing is sent to the
+// Everything is journaled ("car", "car_backed", "beyond_only", "arm_lowered") and nothing is sent to the
 // vehicle log yet: first a week of counts against the plate reads and the arm.
 type CarCounter struct {
 	mu      sync.Mutex
@@ -37,6 +39,8 @@ type CarCounter struct {
 	arm func(gate string, at time.Time) (string, []byte)
 	// Whether the lane's arm was up at a moment (ArmAlerts.ArmUp). nil: not known
 	armUp func(gate string, at time.Time) bool
+	// Whether the lane's arm came down between two moments (ArmAlerts.ArmCameDown). nil: not known
+	armCameDown func(gate string, from, to time.Time) bool
 }
 
 // CountZone is one zone of one camera's picture: a polygon in percent of its width and height.
@@ -52,17 +56,25 @@ type CountZone struct {
 }
 
 const (
-	countWidth, countHeight = 160, 90 // frames are compared at this size (1/4 of the Reolink's 640 x 360)
-	countPixelDiff          = 30      // a pixel differs from the background by this much (of 255), beyond the picture's typical difference
-	countOnShare            = 0.30    // a zone is full at this share of differing pixels (the arm rising through "approach" makes 0.17), and empty below half of it
-	countBackground         = 20      // frames in the background's median (every other frame: the last 20 s)
-	countWarmup             = 10      // frames before counting starts
+	countWidth, countHeight = 320, 176 // frames are compared at this size (half the Reolink's 640 x 360, to whole blocks)
+	countBlock              = 8        // in blocks of countBlock x countBlock pixels
+	blocksW, blocksH        = countWidth / countBlock, countHeight / countBlock
+	countPixelDiff          = 30   // a pixel (or a plain block) differs from the background by this much (of 255), beyond the picture's typical difference
+	countTextured           = 5    // a block whose brightness varies by this much (standard deviation) has a pattern to compare
+	countSameTexture        = 0.5  // a textured block whose pattern correlates with the background's this well is unchanged, however much brighter or darker
+	countOnShare            = 0.30 // a zone is full at this share of changed blocks, and empty below half of it
+	countBackground         = 40   // frames in the background's median (every other frame: the last 40 s; 20 s until 2026-10-23, when a car waiting 10 s at the keypad or the arm faded into it)
+	countWarmup             = 10   // frames before counting starts
 	countApproachWindow     = 8 * time.Second
-	// A car whose part in "beyond" ends this much nearer "approach" (in pixels of countWidth x
-	// countHeight) than where it entered went back: it reached the arm and reversed (2026-10-22
+	// A car whose part in "beyond" ends this much nearer "approach" (in 1/160 of the picture's
+	// width or 1/90 of its height) than where it entered went back: it reached the arm and reversed (2026-10-22
 	// 13:08, an SUV: in "beyond" its center went 115 to 101 across as it backed to the keypad,
 	// where a car going in leaves at the far side, 99 to 149).
 	countWentBack = 4
+
+	// A back-out whose time in "approach" (from this much before it to this much after) holds
+	// the arm coming down was the arm (classify)
+	armLoweredBefore, armLoweredAfter = 1 * time.Second, 4 * time.Second
 
 	autoWidth, autoHeight = 96, 54 // the overview photo's "auto" pick compares frames at this size
 )
@@ -72,9 +84,10 @@ func NewCarCounter(journal *Journal, debugf func(string, ...interface{})) *CarCo
 }
 
 // SetArm sets what each counted car is reported to (ArmAlerts.CarCrossed), and how to ask
-// whether the lane's arm was up (ArmAlerts.ArmUp). Call before frames arrive.
-func (c *CarCounter) SetArm(arm func(gate string, at time.Time) (string, []byte), armUp func(gate string, at time.Time) bool) {
-	c.arm, c.armUp = arm, armUp
+// whether the lane's arm was up (ArmAlerts.ArmUp) and whether it came down (ArmAlerts.ArmCameDown).
+// Call before frames arrive.
+func (c *CarCounter) SetArm(arm func(gate string, at time.Time) (string, []byte), armUp func(gate string, at time.Time) bool, armCameDown func(gate string, from, to time.Time) bool) {
+	c.arm, c.armUp, c.armCameDown = arm, armUp, armCameDown
 }
 
 // SetUnread sets where counted cars go to be matched with plate reads. Call before frames arrive.
@@ -222,6 +235,13 @@ func (c *CarCounter) classify(ip string, e countEvent) countEvent {
 		e.kind, e.approach = "car", e.start
 		e.data["arm_up"] = true
 	}
+	// "approach" filling and emptying as the arm came down was the arm: at night it glows in
+	// the infrared and sweeps through "approach" after each car (2026-10-22 18:30 to 20:15: 16
+	// back-outs, each 1.5 to 2.5 s before the arm was seen down)
+	if e.kind == "car_backed" && e.data["went_back"] == nil && lane.Direction == "entry" && c.armCameDown != nil &&
+		c.armCameDown(lane.Gate, e.approach.Add(-armLoweredBefore), e.end.Add(armLoweredAfter)) {
+		e.kind = "arm_lowered"
+	}
 	e.data["camera_ip"] = ip
 	return e
 }
@@ -232,12 +252,13 @@ type zoneCounter struct {
 	ip                   string
 	approachZone         CountZone
 	beyondZone           CountZone
-	approach, beyond     []bool        // masks, countWidth x countHeight
+	approach, beyond     []bool        // masks, blocksW x blocksH
 	aOn, bOn             float64       // each zone is full at this share, and empty below half of it
 	window               time.Duration // how long after "approach" a car may reach "beyond"
 	jump                 int           // a frame whose whole picture moved more than this from the background is skipped
 	backedPending        bool          // "approach" emptied without "beyond": backed out, unless "beyond" fills within the window
 	history              [][]uint8
+	bg                   []uint8 // the background: the median of history, kept until history changes
 	frames               int
 	approachOn, beyondOn bool
 	approachStart        time.Time
@@ -264,15 +285,20 @@ func (z *zoneCounter) step(t time.Time, g []uint8) []countEvent {
 		if len(z.history) > countBackground {
 			z.history = z.history[1:]
 		}
+		z.bg = nil
 	}
 	if z.frames < countWarmup {
 		return nil
 	}
-	bg := background(z.history)
+	if z.bg == nil {
+		z.bg = background(z.history)
+	}
+	bg := z.bg
 	if exposureJump(g, bg, z.jump) {
 		return nil // the camera changed its exposure: the whole picture differs, not a car
 	}
-	a, b := zoneShares(g, bg, z.approach, z.beyond)
+	changed := blockChanges(g, bg)
+	a, b := zoneShares(changed, z.approach, z.beyond)
 	if z.approachCenter == [2]float64{} {
 		z.approachCenter = maskCenter(z.approach)
 	}
@@ -299,7 +325,7 @@ func (z *zoneCounter) step(t time.Time, g []uint8) []countEvent {
 	}
 	if b >= z.bOn && !z.beyondOn {
 		z.beyondOn, z.beyondStart, z.beyondPeak = true, t, 0
-		z.beyondFirst = z.beyondDistance(g, bg)
+		z.beyondFirst = z.beyondDistance(changed)
 		z.beyondLast = z.beyondFirst
 		// After an approach: a car came in. Without one: something else (a pedestrian, a
 		// shadow, or a car backing out through the gate)
@@ -311,7 +337,7 @@ func (z *zoneCounter) step(t time.Time, g []uint8) []countEvent {
 	if z.beyondOn {
 		z.beyondPeak = math.Max(z.beyondPeak, b)
 		if b >= z.bOn/2 {
-			z.beyondLast = z.beyondDistance(g, bg)
+			z.beyondLast = z.beyondDistance(changed)
 		}
 	}
 	if b < z.bOn/2 && z.beyondOn {
@@ -355,38 +381,29 @@ func (z *zoneCounter) step(t time.Time, g []uint8) []countEvent {
 	return events
 }
 
-// beyondDistance is how far the middle of what differs in "beyond" is from the middle of
-// "approach", in pixels; 0 when nothing differs.
-func (z *zoneCounter) beyondDistance(g, bg []uint8) float64 {
-	diff := make([]int, len(g))
-	sorted := make([]int, len(g))
-	for i := range g {
-		diff[i] = int(g[i]) - int(bg[i])
-		sorted[i] = diff[i]
+// beyondDistance is how far the middle of what changed in "beyond" is from the middle of
+// "approach", in 1/160 of the picture's width and 1/90 of its height; 0 when nothing changed.
+func (z *zoneCounter) beyondDistance(changed []bool) float64 {
+	in := make([]bool, len(changed))
+	any := false
+	for i := range changed {
+		in[i] = changed[i] && z.beyond[i]
+		any = any || in[i]
 	}
-	sort.Ints(sorted)
-	typical := sorted[len(sorted)/2]
-	var sx, sy, n float64
-	for i, in := range z.beyond {
-		if d := diff[i] - typical; in && (d > countPixelDiff || d < -countPixelDiff) {
-			sx += float64(i % countWidth)
-			sy += float64(i / countWidth)
-			n++
-		}
-	}
-	if n == 0 {
+	if !any {
 		return 0
 	}
-	return math.Hypot(sx/n-z.approachCenter[0], sy/n-z.approachCenter[1])
+	c := maskCenter(in)
+	return math.Hypot(c[0]-z.approachCenter[0], c[1]-z.approachCenter[1])
 }
 
-// maskCenter is the middle of a mask's pixels.
+// maskCenter is the middle of a block mask, in 1/160 of the picture's width and 1/90 of its height.
 func maskCenter(m []bool) [2]float64 {
 	var sx, sy, n float64
 	for i, in := range m {
 		if in {
-			sx += float64(i % countWidth)
-			sy += float64(i / countWidth)
+			sx += (float64(i%blocksW) + 0.5) * 160 / blocksW
+			sy += (float64(i/blocksW) + 0.5) * 90 / blocksH
 			n++
 		}
 	}
@@ -448,12 +465,21 @@ func medianFrame(history [][]uint8) []uint8 {
 // differingShare is the share of a frame's pixels that differ from the background, beyond the
 // picture's median difference.
 func differingShare(g, bg []uint8) float64 {
-	all := make([]bool, len(g))
-	for i := range all {
-		all[i] = true
+	d := make([]int, len(g))
+	sorted := make([]int, len(g))
+	for i := range g {
+		d[i] = int(g[i]) - int(bg[i])
+		sorted[i] = d[i]
 	}
-	s, _ := zoneShares(g, bg, all, all)
-	return s
+	sort.Ints(sorted)
+	typical := sorted[len(sorted)/2]
+	on := 0
+	for _, v := range d {
+		if v-typical > countPixelDiff || v-typical < -countPixelDiff {
+			on++
+		}
+	}
+	return float64(on) / float64(len(d))
 }
 
 // countExposureJump is how far (of 255) the whole picture's median may move from the
@@ -476,17 +502,65 @@ func exposureJump(g, bg []uint8, limit int) bool {
 	return m > limit || m < -limit
 }
 
-// zoneShares is the share of each zone's pixels that differ from the background, beyond the
-// whole picture's median difference, so a cloud or an exposure change doesn't fill a zone.
-func zoneShares(g, bg []uint8, approach, beyond []bool) (float64, float64) {
-	diff := make([]int, len(g))
-	sorted := make([]int, len(g))
-	for i := range g {
-		diff[i] = int(g[i]) - int(bg[i])
-		sorted[i] = diff[i]
+// blockChanges marks the blocks (blocksW x blocksH) where something is in the picture that
+// isn't in the background. A block with a pattern in both (the pavers) has changed when its
+// pattern no longer correlates with the background's: headlights on the pavers, a shadow or
+// the camera's exposure make it brighter or darker but keep the pattern (2026-10-22: at night
+// the headlights of a car at the keypad filled "approach" by brightness, and by day the
+// Reolink's darkening for a white car hid it). Other blocks have changed when their brightness
+// moved more than countPixelDiff beyond the picture's typical change. Then lone thin lines
+// are dropped (a block stays only within a 2 x 2 square of changed blocks): the arm, which
+// glows in the infrared at night, and the edge it leaves where it was.
+func blockChanges(g, bg []uint8) []bool {
+	const n = countBlock * countBlock
+	means := make([]float64, blocksW*blocksH)
+	textured := make([]bool, blocksW*blocksH)
+	same := make([]bool, blocksW*blocksH)
+	for by := 0; by < blocksH; by++ {
+		for bx := 0; bx < blocksW; bx++ {
+			var sf, sb, sff, sbb, sfb float64
+			for y := by * countBlock; y < (by+1)*countBlock; y++ {
+				for x := bx * countBlock; x < (bx+1)*countBlock; x++ {
+					f, b := float64(g[y*countWidth+x]), float64(bg[y*countWidth+x])
+					sf, sb, sff, sbb, sfb = sf+f, sb+b, sff+f*f, sbb+b*b, sfb+f*b
+				}
+			}
+			mf, mb := sf/n, sb/n
+			vf, vb := sff/n-mf*mf, sbb/n-mb*mb
+			i := by*blocksW + bx
+			means[i] = mf - mb
+			if vf > countTextured*countTextured && vb > countTextured*countTextured {
+				textured[i] = true
+				same[i] = (sfb/n-mf*mb)/math.Sqrt(vf*vb) >= countSameTexture
+			}
+		}
 	}
-	sort.Ints(sorted)
+	sorted := append([]float64(nil), means...)
+	sort.Float64s(sorted)
 	typical := sorted[len(sorted)/2]
+	raw := make([]bool, len(means))
+	for i := range raw {
+		if textured[i] {
+			raw[i] = !same[i]
+		} else {
+			raw[i] = math.Abs(means[i]-typical) > countPixelDiff
+		}
+	}
+	// Opening: keep each block that is in a 2 x 2 square of changed blocks
+	out := make([]bool, len(raw))
+	for y := 0; y+1 < blocksH; y++ {
+		for x := 0; x+1 < blocksW; x++ {
+			i := y*blocksW + x
+			if raw[i] && raw[i+1] && raw[i+blocksW] && raw[i+blocksW+1] {
+				out[i], out[i+1], out[i+blocksW], out[i+blocksW+1] = true, true, true, true
+			}
+		}
+	}
+	return out
+}
+
+// zoneShares is the share of each zone's blocks that changed (blockChanges).
+func zoneShares(changed, approach, beyond []bool) (float64, float64) {
 	share := func(mask []bool) float64 {
 		n, on := 0, 0
 		for i, in := range mask {
@@ -494,8 +568,7 @@ func zoneShares(g, bg []uint8, approach, beyond []bool) (float64, float64) {
 				continue
 			}
 			n++
-			d := diff[i] - typical
-			if d > countPixelDiff || d < -countPixelDiff {
+			if changed[i] {
 				on++
 			}
 		}
@@ -507,13 +580,13 @@ func zoneShares(g, bg []uint8, approach, beyond []bool) (float64, float64) {
 	return share(approach), share(beyond)
 }
 
-// polygonMask marks the pixels whose centers are inside a polygon given in percent.
+// polygonMask marks the blocks whose centers are inside a polygon given in percent.
 func polygonMask(pts [][2]float64) []bool {
-	m := make([]bool, countWidth*countHeight)
-	for y := 0; y < countHeight; y++ {
-		py := (float64(y) + 0.5) * 100 / countHeight
-		for x := 0; x < countWidth; x++ {
-			px := (float64(x) + 0.5) * 100 / countWidth
+	m := make([]bool, blocksW*blocksH)
+	for y := 0; y < blocksH; y++ {
+		py := (float64(y) + 0.5) * 100 / blocksH
+		for x := 0; x < blocksW; x++ {
+			px := (float64(x) + 0.5) * 100 / blocksW
 			inside := false
 			for i, j := 0, len(pts)-1; i < len(pts); j, i = i, i+1 {
 				xi, yi, xj, yj := pts[i][0], pts[i][1], pts[j][0], pts[j][1]
@@ -521,7 +594,7 @@ func polygonMask(pts [][2]float64) []bool {
 					inside = !inside
 				}
 			}
-			m[y*countWidth+x] = inside
+			m[y*blocksW+x] = inside
 		}
 	}
 	return m

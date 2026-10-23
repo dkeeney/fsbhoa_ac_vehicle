@@ -5,12 +5,13 @@ import (
 	"time"
 )
 
-// countFrame is a plain frame with a dark "car" covering rows y0 to y1 (none if y0 >= y1).
+// countFrame is a plain frame with a dark "car" covering rows y0 to y1 of 90 (none if y0 >= y1).
 func countFrame(y0, y1 int) []uint8 {
 	g := make([]uint8, countWidth*countHeight)
 	for i := range g {
 		g[i] = 120
 	}
+	y0, y1 = y0*countHeight/90, y1*countHeight/90
 	for y := y0; y < y1 && y < countHeight; y++ {
 		for x := 0; x < countWidth; x++ {
 			g[y*countWidth+x] = 20
@@ -109,7 +110,7 @@ func TestCountTwoCars(t *testing.T) {
 
 func TestPolygonMask(t *testing.T) {
 	m := polygonMask([][2]float64{{0, 0}, {100, 0}, {0, 100}}) // the top-left half
-	if !m[1*countWidth+1] || m[(countHeight-2)*countWidth+countWidth-2] {
+	if !m[1*blocksW+1] || m[(blocksH-2)*blocksW+blocksW-2] {
 		t.Fatal("triangle mask wrong")
 	}
 }
@@ -129,7 +130,7 @@ func TestCountBeyondWithArmUp(t *testing.T) {
 	for _, up := range []bool{true, false} {
 		c := NewCarCounter(nil, t.Logf)
 		var got []string
-		c.SetArm(func(string, time.Time) (string, []byte) { return "", nil }, func(string, time.Time) bool { return up })
+		c.SetArm(func(string, time.Time) (string, []byte) { return "", nil }, func(string, time.Time) bool { return up }, nil)
 		c.gates.Store(NewGates([]GateConfig{{Name: "South Enter", OverviewIP: "192.0.2.41"}}, nil))
 		zc := newTestCounter()
 		t0 := time.Date(2026, 10, 21, 15, 1, 0, 0, time.Local)
