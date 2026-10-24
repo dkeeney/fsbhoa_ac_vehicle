@@ -5,6 +5,7 @@ import (
 	"log"
 	"math"
 	"strings"
+	"sync"
 	"time"
 
 	mqtt "github.com/eclipse/paho.mqtt.golang"
@@ -15,14 +16,28 @@ import (
 // <topic>/events on the gates' own broker on the alarm box and never publishes. Each object is
 // journaled when it appears ("new"), each time it enters a zone ("zone"), and when it's gone
 // ("end"), as `frigate_event`; Frigate's other updates (every few frames) are left out.
+//
+// It also keeps the last few minutes of crossings, objects that entered "approach" and then
+// "beyond", as a second opinion for the car count (Crossed).
 type FrigateEvents struct {
 	broker, topic string
 	journal       *Journal
+
+	mu        sync.Mutex
+	crossings []frigateCrossing
+}
+
+// frigateCrossing is an object Frigate followed from "approach" into "beyond": when it entered
+// "beyond" (when the event arrived; Frigate sends it within about a second) and its camera.
+type frigateCrossing struct {
+	camera string
+	at     time.Time
 }
 
 const (
 	frigateClientID = "fsbhoa_vehicle_" // + hostname: one subscriber per server
 	frigateRetry    = 30 * time.Second
+	frigateKeep     = 10 * time.Minute // crossings kept for Crossed
 )
 
 func NewFrigateEvents(broker, topic string, journal *Journal) *FrigateEvents {
@@ -84,7 +99,45 @@ func (f *FrigateEvents) handle(_ mqtt.Client, m mqtt.Message) {
 	}
 	if entry := frigateEntry(msg); entry != nil {
 		f.journal.Write("frigate_event", entry)
+		if entry["zone"] == "beyond" && frigateWasIn(msg.After.EnteredZones, "approach") {
+			f.addCrossing(msg.After.Camera, time.Now())
+		}
 	}
+}
+
+func frigateWasIn(zones []string, zone string) bool {
+	for _, z := range zones {
+		if z == zone {
+			return true
+		}
+	}
+	return false
+}
+
+func (f *FrigateEvents) addCrossing(camera string, at time.Time) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	keep := f.crossings[:0]
+	for _, c := range f.crossings {
+		if at.Sub(c.at) <= frigateKeep {
+			keep = append(keep, c)
+		}
+	}
+	f.crossings = append(keep, frigateCrossing{camera, at})
+}
+
+// Crossed reports whether Frigate followed an object from "approach" into "beyond" between from
+// and to, on the camera named for the lane ("South Enter": south_enter).
+func (f *FrigateEvents) Crossed(gate string, from, to time.Time) bool {
+	camera := strings.ReplaceAll(strings.ToLower(gate), " ", "_")
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, c := range f.crossings {
+		if c.camera == camera && !c.at.Before(from) && !c.at.After(to) {
+			return true
+		}
+	}
+	return false
 }
 
 // frigateEntry is the journal entry for one event, or nil when it says nothing new: a "new"

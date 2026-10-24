@@ -233,6 +233,12 @@ func main() {
 		plateEvents.SendBacked(camera, gate, e, photoAt)
 	})
 	carCounter.SetBacked(unreadCars.Backed)
+	// The gates' Frigate's tracked objects, journaled, and a second opinion on back-outs (frigate.go)
+	if cfg.FrigateBroker != "" {
+		frigate := NewFrigateEvents(cfg.FrigateBroker, cfg.FrigateTopic, journal)
+		carCounter.SetFrigate(frigate.Crossed)
+		go frigate.Run()
+	}
 	lprDrop.SetUnread(unreadCars)
 	go lprDrop.Run()
 
@@ -246,11 +252,6 @@ func main() {
 	motion.SetStateHandler(armAlerts.HandleState)
 	carCounter.SetArm(armAlerts.CarCrossed, armAlerts.ArmUp, armAlerts.ArmCameDown, armAlerts.ArmWentUp) // a car through an arm already up gets a note on its card
 	go motion.Run()
-
-	// The gates' Frigate's tracked objects, journaled only (frigate.go)
-	if cfg.FrigateBroker != "" {
-		go NewFrigateEvents(cfg.FrigateBroker, cfg.FrigateTopic, journal).Run()
-	}
 
 	// The gates' devices are the only addresses (besides this machine) that may call the
 	// webhooks, and a device's address tells which gate and lane a call is from.

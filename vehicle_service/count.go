@@ -43,6 +43,9 @@ type CarCounter struct {
 	armCameDown func(gate string, from, to time.Time) bool
 	// Whether the lane's arm went up between two moments (ArmAlerts.ArmWentUp). nil: not known
 	armWentUp func(gate string, from, to time.Time) bool
+	// Whether the gates' Frigate followed a car from "approach" into "beyond" between two
+	// moments (FrigateEvents.Crossed). nil: no Frigate
+	frigateCrossed func(gate string, from, to time.Time) bool
 }
 
 // CountZone is one zone of one camera's picture: a polygon in percent of its width and height.
@@ -84,6 +87,11 @@ const (
 	// the arm coming down or going up was the arm (classify)
 	armLoweredBefore, armLoweredAfter = 1 * time.Second, 4 * time.Second
 
+	// A back-out with a Frigate crossing from this much before it to this much after it wasn't
+	// one (classify): after "beyond" emptied for one that went back from the arm, after
+	// "approach" emptied for one at the keypad (decided countApproachWindow later)
+	frigateBefore, frigateAfterBeyond, frigateAfterApproach = 3 * time.Second, 3 * time.Second, 8 * time.Second
+
 	autoWidth, autoHeight = 96, 54 // the overview photo's "auto" pick compares frames at this size
 )
 
@@ -100,6 +108,12 @@ func (c *CarCounter) SetArm(arm func(gate string, at time.Time) (string, []byte)
 
 // SetUnread sets where counted cars go to be matched with plate reads. Call before frames arrive.
 func (c *CarCounter) SetUnread(u *UnreadCars) { c.unread = u }
+
+// SetFrigate sets how to ask whether the gates' Frigate saw a car cross (FrigateEvents.Crossed).
+// Call before frames arrive.
+func (c *CarCounter) SetFrigate(crossed func(gate string, from, to time.Time) bool) {
+	c.frigateCrossed = crossed
+}
 
 // SetBacked sets where a car that backed out goes (UnreadCars.Backed). Call before frames arrive.
 func (c *CarCounter) SetBacked(send func(camera, gate string, e countEvent, after time.Duration, photoAt time.Time)) {
@@ -199,7 +213,7 @@ func (c *CarCounter) HandleFrame(ip string, f photoFrame) {
 		// A car that backed out (at the keypad, or at the arm) is a clue for staff: a driver
 		// who had to back up and enter a code again, or one let in by someone else. Sent only
 		// where the count is matched with the plate reads (plate=), where it holds up.
-		if e.kind == "car_backed" && c.backed != nil && zc.beyondZone.Plate > 0 {
+		if e.kind == "car_backed" && e.data["frigate_car"] == nil && c.backed != nil && zc.beyondZone.Plate > 0 {
 			photoAt := e.approach.Add(e.end.Sub(e.approach) / 2) // halfway through its time in "approach"
 			if e.data["went_back"] == true {
 				photoAt = e.start // as it reached past the arm
@@ -254,6 +268,23 @@ func (c *CarCounter) classify(ip string, e countEvent) countEvent {
 			e.kind = "arm_lowered"
 		} else if c.armWentUp != nil && c.armWentUp(lane.Gate, from, to) {
 			e.kind = "arm_raised"
+		}
+	}
+	// A second opinion from the gates' Frigate, which follows each car as one object: a car it
+	// saw go from "approach" into "beyond" didn't back out. On 2026-10-23 (10:20 to 05:30, 425
+	// plates) all four reversals from the arm were cars that went in, which Frigate followed in
+	// (the car leaving, then the arm coming down or the next car behind took over the lane's
+	// front); Frigate misses cars at night, so it doesn't count them itself. One that went back
+	// is a car again; one at the keypad stays a back-out (the car Frigate saw may be counted on
+	// its own) but isn't sent.
+	if e.kind == "car_backed" && lane.Direction == "entry" && c.frigateCrossed != nil {
+		if e.data["went_back"] == true {
+			if c.frigateCrossed(lane.Gate, e.start.Add(-frigateBefore), e.end.Add(frigateAfterBeyond)) {
+				e.kind = "car"
+				e.data["frigate_car"] = true
+			}
+		} else if c.frigateCrossed(lane.Gate, e.approach.Add(-frigateBefore), e.end.Add(frigateAfterApproach)) {
+			e.data["frigate_car"] = true
 		}
 	}
 	e.data["camera_ip"] = ip
