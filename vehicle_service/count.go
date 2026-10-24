@@ -41,6 +41,8 @@ type CarCounter struct {
 	armUp func(gate string, at time.Time) bool
 	// Whether the lane's arm came down between two moments (ArmAlerts.ArmCameDown). nil: not known
 	armCameDown func(gate string, from, to time.Time) bool
+	// Whether the lane's arm went up between two moments (ArmAlerts.ArmWentUp). nil: not known
+	armWentUp func(gate string, from, to time.Time) bool
 }
 
 // CountZone is one zone of one camera's picture: a polygon in percent of its width and height.
@@ -79,7 +81,7 @@ const (
 	countPathMargin = 2
 
 	// A back-out whose time in "approach" (from this much before it to this much after) holds
-	// the arm coming down was the arm (classify)
+	// the arm coming down or going up was the arm (classify)
 	armLoweredBefore, armLoweredAfter = 1 * time.Second, 4 * time.Second
 
 	autoWidth, autoHeight = 96, 54 // the overview photo's "auto" pick compares frames at this size
@@ -90,10 +92,10 @@ func NewCarCounter(journal *Journal, debugf func(string, ...interface{})) *CarCo
 }
 
 // SetArm sets what each counted car is reported to (ArmAlerts.CarCrossed), and how to ask
-// whether the lane's arm was up (ArmAlerts.ArmUp) and whether it came down (ArmAlerts.ArmCameDown).
-// Call before frames arrive.
-func (c *CarCounter) SetArm(arm func(gate string, at time.Time) (string, []byte), armUp func(gate string, at time.Time) bool, armCameDown func(gate string, from, to time.Time) bool) {
-	c.arm, c.armUp, c.armCameDown = arm, armUp, armCameDown
+// whether the lane's arm was up (ArmAlerts.ArmUp), came down (ArmAlerts.ArmCameDown) or went up
+// (ArmAlerts.ArmWentUp). Call before frames arrive.
+func (c *CarCounter) SetArm(arm func(gate string, at time.Time) (string, []byte), armUp func(gate string, at time.Time) bool, armCameDown, armWentUp func(gate string, from, to time.Time) bool) {
+	c.arm, c.armUp, c.armCameDown, c.armWentUp = arm, armUp, armCameDown, armWentUp
 }
 
 // SetUnread sets where counted cars go to be matched with plate reads. Call before frames arrive.
@@ -244,9 +246,15 @@ func (c *CarCounter) classify(ip string, e countEvent) countEvent {
 	// "approach" filling and emptying as the arm came down was the arm: at night it glows in
 	// the infrared and sweeps through "approach" after each car (2026-10-22 18:30 to 20:15: 16
 	// back-outs, each 1.5 to 2.5 s before the arm was seen down)
-	if e.kind == "car_backed" && e.data["went_back"] == nil && lane.Direction == "entry" && c.armCameDown != nil &&
-		c.armCameDown(lane.Gate, e.approach.Add(-armLoweredBefore), e.end.Add(armLoweredAfter)) {
-		e.kind = "arm_lowered"
+	// Rising, it sweeps "approach" too, with the car still waiting at the keypad (2026-10-23
+	// 20:02:55, sent as "Backed out"; the car drove in 12 s later)
+	if e.kind == "car_backed" && e.data["went_back"] == nil && lane.Direction == "entry" {
+		from, to := e.approach.Add(-armLoweredBefore), e.end.Add(armLoweredAfter)
+		if c.armCameDown != nil && c.armCameDown(lane.Gate, from, to) {
+			e.kind = "arm_lowered"
+		} else if c.armWentUp != nil && c.armWentUp(lane.Gate, from, to) {
+			e.kind = "arm_raised"
+		}
 	}
 	e.data["camera_ip"] = ip
 	return e

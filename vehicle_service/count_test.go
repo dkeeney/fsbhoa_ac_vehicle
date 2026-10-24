@@ -130,7 +130,7 @@ func TestCountBeyondWithArmUp(t *testing.T) {
 	for _, up := range []bool{true, false} {
 		c := NewCarCounter(nil, t.Logf)
 		var got []string
-		c.SetArm(func(string, time.Time) (string, []byte) { return "", nil }, func(string, time.Time) bool { return up }, nil)
+		c.SetArm(func(string, time.Time) (string, []byte) { return "", nil }, func(string, time.Time) bool { return up }, nil, nil)
 		c.gates.Store(NewGates([]GateConfig{{Name: "South Enter", OverviewIP: "192.0.2.41"}}, nil))
 		zc := newTestCounter()
 		t0 := time.Date(2026, 10, 21, 15, 1, 0, 0, time.Local)

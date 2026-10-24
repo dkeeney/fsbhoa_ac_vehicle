@@ -244,7 +244,7 @@ func main() {
 	armAlerts := NewArmAlerts(dispatcher, journal, cfg.JournalDir)
 	armAlerts.SetPhotos(overviewPhotos)
 	motion.SetStateHandler(armAlerts.HandleState)
-	carCounter.SetArm(armAlerts.CarCrossed, armAlerts.ArmUp, armAlerts.ArmCameDown) // a car through an arm already up gets a note on its card
+	carCounter.SetArm(armAlerts.CarCrossed, armAlerts.ArmUp, armAlerts.ArmCameDown, armAlerts.ArmWentUp) // a car through an arm already up gets a note on its card
 	go motion.Run()
 
 	// The gates' Frigate's tracked objects, journaled only (frigate.go)
