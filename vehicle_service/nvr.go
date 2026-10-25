@@ -46,15 +46,15 @@ import (
 //   - The NVR user needs remote live view and playback for each lane camera's channel (the
 //     NVR answers 404 "Stream Not Found" otherwise).
 const (
-	nvrRTSPPort      = 554
-	nvrExtraLength   = 15 * time.Second
-	nvrChannelsFor   = 10 * time.Minute
-	nvrLoginBackoff  = 5 * time.Minute
-	nvrMaxStreams    = 6 // ffmpeg conversions at once
+	nvrRTSPPort     = 554
+	nvrExtraLength  = 15 * time.Second
+	nvrChannelsFor  = 10 * time.Minute
+	nvrLoginBackoff = 5 * time.Minute
+	nvrMaxStreams   = 6 // ffmpeg conversions at once
 	// A clip's conversion ends this long after its length, whatever the viewer does. A browser
 	// that stops reading (its buffer full, or the player closed) keeps the connection open,
 	// and without a limit the conversion waited on it for minutes (2026-10-25).
-	nvrStreamGrace = 45 * time.Second
+	nvrStreamGrace   = 45 * time.Second
 	nvrMaxClipLength = 10 * time.Minute
 	nvrTimestamp     = "2006-01-02 15:04:05"
 )
