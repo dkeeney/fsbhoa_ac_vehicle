@@ -17,11 +17,13 @@ define( 'FSBHOA_AC_VEHICLE_URL', plugin_dir_url( __FILE__ ) );
 
 // Load Settings Class
 require_once FSBHOA_AC_VEHICLE_DIR . 'includes/class-fsbhoa-vehicle-settings.php';
+require_once FSBHOA_AC_VEHICLE_DIR . 'includes/class-fsbhoa-vehicle-video.php';
 
 /**
  * Initialize plugin components.
  */
 FSBHOA_Vehicle_Settings::get_instance();
+FSBHOA_Vehicle_Video::init(); // the live monitor's Video button: the NVR's recordings
 
 /**
  * Core owns the vehicle log, its REST routes, the monitor column and photo retention.

@@ -85,6 +85,9 @@ class FSBHOA_Vehicle_Settings {
 			'ram_file'             => '',
 			'lpr_drop_dir'         => self::LPR_DROP_DIR_DEFAULT,
 			'frigate_mqtt'         => '',
+			'nvr_url'              => '',
+			'nvr_user'             => '',
+			'nvr_password'         => '',
 			'gates'                => array(),
 			'exit_lanes'           => array(),
 			'motion_regions'       => array(),
@@ -180,6 +183,15 @@ class FSBHOA_Vehicle_Settings {
 			self::PAGE_SLUG,
 			'fsbhoa_vehicle_sources_section',
 			array( 'label_for' => 'fsbhoa_vehicle_frigate_mqtt' )
+		);
+
+		add_settings_field(
+			'nvr',
+			__( 'NVR (recorded video)', 'fsbhoa-ac-vehicle' ),
+			array( $this, 'render_nvr_fields' ),
+			self::PAGE_SLUG,
+			'fsbhoa_vehicle_sources_section',
+			array( 'label_for' => 'fsbhoa_vehicle_nvr_url' )
 		);
 
 		add_settings_field(
@@ -293,6 +305,14 @@ class FSBHOA_Vehicle_Settings {
 		$sanitized['ram_file']    = $this->sanitize_ram_file( $input['ram_file'] ?? '' );
 		$sanitized['lpr_drop_dir'] = $this->sanitize_lpr_drop_dir( $input['lpr_drop_dir'] ?? '' );
 		$sanitized['frigate_mqtt'] = $this->sanitize_frigate_mqtt( $input['frigate_mqtt'] ?? '' );
+		$sanitized['nvr_url']      = $this->sanitize_nvr_url( $input['nvr_url'] ?? '' );
+		$sanitized['nvr_user']     = sanitize_text_field( (string) ( $input['nvr_user'] ?? '' ) );
+		// The password is never shown on the page: a blank field keeps the saved one
+		$nvr_password              = (string) ( $input['nvr_password'] ?? '' );
+		$sanitized['nvr_password'] = '' !== $nvr_password ? $nvr_password : ( self::get_options()['nvr_password'] ?? '' );
+		if ( ! empty( $input['nvr_password_clear'] ) ) {
+			$sanitized['nvr_password'] = '';
+		}
 		$ips                      = array();
 		$sanitized['gates']       = $this->sanitize_lanes( $input['gates'] ?? array(), 'gates', $ips );
 		$sanitized['exit_lanes']  = $this->sanitize_lanes( $input['exit_lanes'] ?? array(), 'exit_lanes', $ips );
@@ -357,6 +377,30 @@ class FSBHOA_Vehicle_Settings {
 			return '';
 		}
 		return $path;
+	}
+
+	/**
+	 * The NVR's web address, "http://<host>[:<port>]"; empty: none. A value that doesn't fit is
+	 * dropped with a message.
+	 */
+	private function sanitize_nvr_url( $value ) {
+		$value = untrailingslashit( trim( sanitize_text_field( (string) $value ) ) );
+		if ( '' === $value ) {
+			return '';
+		}
+		if ( ! preg_match( '#^https?://[A-Za-z0-9.-]+(:\d{1,5})?$#', $value ) ) {
+			add_settings_error(
+				self::OPTION_NAME,
+				'fsbhoa_vehicle_nvr_url',
+				sprintf(
+					/* translators: %s: the value entered */
+					__( 'NVR URL "%s" was not saved: it must be the NVR\'s web address, such as http://192.168.107.74.', 'fsbhoa-ac-vehicle' ),
+					$value
+				)
+			);
+			return '';
+		}
+		return $value;
 	}
 
 	/**
@@ -448,11 +492,11 @@ class FSBHOA_Vehicle_Settings {
 			$parts = preg_split( '/\s+/', $line );
 			$error = '';
 			$kind  = '';
-			if ( 7 === count( $parts ) && in_array( $parts[6], array( 'bright', 'bar', 'red' ), true ) ) {
+			if ( 7 === count( $parts ) && in_array( $parts[6], array( 'bright', 'bar', 'red', 'ridge', 'edges' ), true ) ) {
 				$kind = array_pop( $parts );
 			}
 			if ( 6 !== count( $parts ) ) {
-				$error = __( 'it needs a camera address, a name and four edges, and may end with "bright", "bar" or "red"', 'fsbhoa-ac-vehicle' );
+				$error = __( 'it needs a camera address, a name and four edges, and may end with "bright", "bar", "red", "ridge" or "edges"', 'fsbhoa-ac-vehicle' );
 			} elseif ( ! in_array( $parts[0], $cameras, true ) ) {
 				$error = __( 'the camera is not a lane\'s overview, keypad or arm camera', 'fsbhoa-ac-vehicle' );
 			} elseif ( ! preg_match( '/^[A-Za-z0-9_-]{1,20}$/', $parts[1] ) ) {
@@ -983,6 +1027,42 @@ class FSBHOA_Vehicle_Settings {
 		<?php
 	}
 
+	public function render_nvr_fields() {
+		$options      = self::get_options();
+		$has_password = '' !== (string) ( $options['nvr_password'] ?? '' );
+		?>
+		<input type="url"
+				 id="fsbhoa_vehicle_nvr_url"
+				 name="<?php echo esc_attr( self::OPTION_NAME . '[nvr_url]' ); ?>"
+				 value="<?php echo esc_attr( $options['nvr_url'] ?? '' ); ?>"
+				 placeholder="http://192.168.107.74"
+				 class="regular-text code" />
+		<p>
+			<label><?php esc_html_e( 'User', 'fsbhoa-ac-vehicle' ); ?>
+				<input type="text"
+						 name="<?php echo esc_attr( self::OPTION_NAME . '[nvr_user]' ); ?>"
+						 value="<?php echo esc_attr( $options['nvr_user'] ?? '' ); ?>"
+						 autocomplete="off"
+						 class="regular-text" /></label>
+		</p>
+		<p>
+			<label><?php esc_html_e( 'Password', 'fsbhoa-ac-vehicle' ); ?>
+				<input type="password"
+						 name="<?php echo esc_attr( self::OPTION_NAME . '[nvr_password]' ); ?>"
+						 value=""
+						 placeholder="<?php echo esc_attr( $has_password ? __( '(saved; type to change)', 'fsbhoa-ac-vehicle' ) : '' ); ?>"
+						 autocomplete="new-password"
+						 class="regular-text" /></label>
+			<?php if ( $has_password ) : ?>
+				<label><input type="checkbox" name="<?php echo esc_attr( self::OPTION_NAME . '[nvr_password_clear]' ); ?>" value="1" /> <?php esc_html_e( 'Remove the saved password', 'fsbhoa-ac-vehicle' ); ?></label>
+			<?php endif; ?>
+		</p>
+		<p class="description">
+			<?php esc_html_e( 'The NVR that records the lane cameras (a TVT NVMS-9000 NVR, such as the Speco N64NR). With all three set, each card on the live monitor gets a Video button that plays the NVR\'s recording of the lane\'s cameras from just before the card\'s time; vehicle_service fetches it from the NVR and converts it for the browser, so staff need no NVR login. Use an NVR user that may only view and play back: the NVR locks a user after 5 failed logins, so after a refused login vehicle_service waits 5 minutes before trying again. The NVR finds each camera by its address in the lane tables. The password is never shown here; leave it blank to keep the saved one. Applied without a restart.', 'fsbhoa-ac-vehicle' ); ?>
+		</p>
+		<?php
+	}
+
 	public function render_frigate_mqtt_field() {
 		$options = self::get_options();
 		?>
@@ -1007,7 +1087,7 @@ class FSBHOA_Vehicle_Settings {
 				 class="large-text code"
 				 placeholder="192.168.107.131 gate 54 20 82 50"><?php echo esc_textarea( self::motion_regions_text( $options['motion_regions'] ) ); ?></textarea>
 		<p class="description">
-			<?php esc_html_e( 'Areas of the overview, keypad and arm cameras\' pictures that vehicle_service watches for motion, one a line: the camera\'s address (a lane\'s overview, keypad or arm camera), a name (gate, arm, keypad), then the left, top, right and bottom edges in percent of the picture\'s width and height. A region ending with "bright" isn\'t watched for motion: it is on while enough of it is bright (the white arm against the hedge when it is up), and each change is recorded in the journal. A region ending with "bar" is the same, but on while enough of it is a bright bar, brighter than the picture just above and below it (the lowered arm across the pavers), so sun on the pavers doesn\'t count. A region ending with "red" is on while enough of it is red (the raised arm\'s red stripes against the grass), and in a black and white picture (infrared, at night) while it is a bar. A camera with "bar" or "red" regions named arm-down and arm-up uses both for the arm\'s position: up while arm-up sees it, down while only arm-down does. A camera with "bar" regions named arm-down (on the lowered arm near its pivot) and arm-tip (on its outer part) raises a broken arm alert on the live monitor, a red card with a sound, when the arm is down without its tip for 30 seconds, until the whole arm is seen down again. It compares the camera\'s snapshot once a second; each pass of motion is recorded in the journal, and its frames are kept, half size, for 3 days in /var/lib/fsbhoa/overview_frames. Applied without a restart.', 'fsbhoa-ac-vehicle' ); ?>
+			<?php esc_html_e( 'Areas of the overview, keypad and arm cameras\' pictures that vehicle_service watches for motion, one a line: the camera\'s address (a lane\'s overview, keypad or arm camera), a name (gate, arm, keypad), then the left, top, right and bottom edges in percent of the picture\'s width and height. A region ending with "bright" isn\'t watched for motion: it is on while enough of it is bright (the white arm against the hedge when it is up), and each change is recorded in the journal. A region ending with "bar" is the same, but on while enough of it is a bright bar, brighter than the picture just above and below it (the lowered arm across the pavers), so sun on the pavers doesn\'t count. A region ending with "red" is on while enough of it is red (the raised arm\'s red stripes against the grass), and in a black and white picture (infrared, at night) while it is a bar. A camera with "bar" or "red" regions named arm-down and arm-up uses both for the arm\'s position: up while arm-up sees it, down while only arm-down does. A camera with "bar" regions named arm-down (on the lowered arm near its pivot) and arm-tip (on its outer part) raises a broken arm alert on the live monitor, a red card with a sound, when the arm is down without its tip for the lane\'s Arm alert after, until the whole arm is seen down again. A region ending with "ridge" or "edges" finds the lowered arm as a line: its four numbers are the arm\'s pivot end (left, bottom) and tip end (right, top), for an arm that rises to the right. "ridge" looks for a thin stripe along the line (North Enter\'s .11), "edges" for the arm\'s two borders (South Enter\'s Reolink, where the paver joints are stripes too). For now each is only recorded in the journal: down, broken (its pivot half seen without its outer half) or not down, and a broken arm that lasts the lane\'s Arm alert after, without an alert. It compares the camera\'s snapshot once a second; each pass of motion is recorded in the journal, and its frames are kept, half size, for 3 days in /var/lib/fsbhoa/overview_frames. Applied without a restart.', 'fsbhoa-ac-vehicle' ); ?>
 		</p>
 		<?php
 	}
@@ -1300,6 +1380,9 @@ class FSBHOA_Vehicle_Settings {
 			'count_zones'          => array_values( is_array( $options['count_zones'] ?? null ) ? $options['count_zones'] : array() ),
 			'frigate_broker'       => strtok( (string) ( $options['frigate_mqtt'] ?? '' ), ' ' ) ?: '',
 			'frigate_topic'        => trim( (string) strstr( (string) ( $options['frigate_mqtt'] ?? '' ), ' ' ) ),
+			'nvr_url'              => (string) ( $options['nvr_url'] ?? '' ),
+			'nvr_user'             => (string) ( $options['nvr_user'] ?? '' ),
+			'nvr_password'         => (string) ( $options['nvr_password'] ?? '' ),
 		);
 
 		$json_data = json_encode($config, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES );

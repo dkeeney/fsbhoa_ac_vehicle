@@ -41,6 +41,10 @@ type ServiceConfig struct {
 	// The gates' Frigate (frigate.go): its MQTT broker, host:port, and topic prefix. Empty: none.
 	FrigateBroker string `json:"frigate_broker"`
 	FrigateTopic  string `json:"frigate_topic"`
+	// The NVR that records the cameras (nvr.go), for the live monitor's Video button. Empty: none.
+	NVRURL      string `json:"nvr_url"`
+	NVRUser     string `json:"nvr_user"`
+	NVRPassword string `json:"nvr_password"`
 
 	// Local runtime fields (not in JSON, populated via flags/defaults)
 	ConfigPath     string        `json:"-"`

@@ -53,7 +53,9 @@ type MotionRegion struct {
 	// same, but on while a share of it is a bright bar, brighter than the picture just above
 	// and below it (the lowered arm across the pavers), so sun on the pavers doesn't count.
 	// "red" is on while enough of it is red (the raised arm's red stripes against grass and
-	// curb), or, in a frame without color (infrared at night), while it is a "bar".
+	// curb), or, in a frame without color (infrared at night), while it is a "bar". "ridge"
+	// and "edges" find the lowered arm as a line from (Left, Bottom) to (Right, Top)
+	// (arm_line.go).
 	Kind string `json:"kind,omitempty"`
 }
 
@@ -271,6 +273,7 @@ func (w *cameraWatch) handleFrame(t time.Time, data []byte) {
 			w.m.onState(w.ip, c.name, c.on, t)
 		}
 	}
+	w.armLines(t, img)
 	frame := motionFrame{t: t, jpeg: data}
 
 	if w.pass == nil && len(started) > 0 {
@@ -443,6 +446,11 @@ type regionState struct {
 	on     bool // "bright" regions: the settled state
 	known  bool // "bright" regions: a state has settled since the start
 	agree  int  // "bright" regions: frames in a row that differ from the settled state
+	// arm line regions (arm_line.go)
+	line        string    // the settled state: "down", "broken", "not_down"; "": none yet
+	minOuter    float64   // the lowest outer half in this "down" stretch
+	brokenSince time.Time // when "broken" settled
+	lineAlerted bool      // "arm_line_alert" journaled for this broken stretch
 }
 
 type brightChange struct {
@@ -701,4 +709,43 @@ func halfJPEG(data []byte, quality int) ([]byte, error) {
 		return nil, err
 	}
 	return out.Bytes(), nil
+}
+
+// armLines journals each arm line region's settled state, and a broken arm that has lasted the
+// lane's arm alert wait. Watch only: nothing goes to the arm alerts yet.
+func (w *cameraWatch) armLines(t time.Time, img image.Image) {
+	after := armBrokenAfter
+	var lane map[string]interface{}
+	if g := w.m.gates.Load(); g != nil {
+		if d, ok := g.ArmAlertAfter(w.ip); ok {
+			after = d
+		}
+		if d, ok := g.ForIP(w.ip); ok {
+			lane = map[string]interface{}{"gate": d.Gate, "direction": d.Direction, "device": d.Device}
+		}
+	}
+	round := func(v float64) float64 { return math.Round(v*100) / 100 }
+	for _, c := range w.det.lineStates(t, img, after) {
+		kind := "arm_line"
+		entry := map[string]interface{}{"camera_ip": w.ip, "region": c.name, "state": c.state, "at": t.Local().Format(journalTimeFormat),
+			"cover": round(c.score.cover), "pivot": round(c.score.pivot), "outer": round(c.score.outer)}
+		if c.minOuter >= 0 {
+			entry["down_min_outer"] = round(c.minOuter)
+		}
+		if c.alert == "arm_line_alert" {
+			kind = c.alert // the state didn't change; the broken arm lasted the wait
+			delete(entry, "state")
+		}
+		if c.alert != "" {
+			entry["broken_since"] = c.since.Local().Format(journalTimeFormat)
+		}
+		for k, v := range lane {
+			entry[k] = v
+		}
+		w.m.journal.Write(kind, entry)
+		if c.alert == "arm_line_ok" {
+			w.m.journal.Write("arm_line_ok", map[string]interface{}{"camera_ip": w.ip, "region": c.name, "at": entry["at"], "broken_since": entry["broken_since"]})
+		}
+		w.m.debugf("[MOTION] %s: %s %s (cover %.2f, pivot %.2f, outer %.2f) %s", w.ip, c.name, c.state, c.score.cover, c.score.pivot, c.score.outer, c.alert)
+	}
 }

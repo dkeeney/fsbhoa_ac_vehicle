@@ -276,6 +276,10 @@ func main() {
 	motion.SetRegions(cfg.MotionRegions)
 	carCounter.SetZones(cfg.CountZones)
 
+	// Recorded video of a lane camera from the NVR, for the live monitor (this machine only)
+	nvrVideo := NewNVRVideo()
+	nvrVideo.SetConfig(cfg)
+
 	// Saving the vehicle settings rewrites the config file. Apply the lanes and the
 	// DoorKing-only and plate read events settings without a restart.
 	go WatchConfig(*configPath, func(next *ServiceConfig) {
@@ -284,6 +288,7 @@ func main() {
 		plateEvents.SetEnabled(next.PlateEvents)
 		motion.SetRegions(next.MotionRegions)
 		carCounter.SetZones(next.CountZones)
+		nvrVideo.SetConfig(next)
 		log.Printf("[CONFIG] Reloaded: %d entrance lanes, %d exit lanes", len(next.Gates), len(next.ExitLanes))
 		if changed := restartNeeded(cfg, next); len(changed) > 0 {
 			log.Printf("[CONFIG] Changed settings that need a restart of vehicle_service to apply: %v", changed)
@@ -327,6 +332,7 @@ func main() {
 	}
 	mux.HandleFunc("/health", healthHandler)
 	mux.HandleFunc("/status", healthHandler)
+	mux.HandleFunc("/video", func(w http.ResponseWriter, r *http.Request) { nvrVideo.ServeHTTP(w, r, gates.Load()) })
 
 	// Shelly Pro 1 Loop Detector Webhook: ?state=on|off (also 1|0, true|false)
 	mux.HandleFunc("/webhook/loop", fromDevice(func(w http.ResponseWriter, r *http.Request) {
