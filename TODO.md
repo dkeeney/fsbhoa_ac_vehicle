@@ -63,6 +63,7 @@ Items 6, 9, 10 and 11 come down to one redesign: keep one in-progress event per 
   - The compiled `vehicle_service/fsbhoa_vehicle` binary is committed. Remove it from git and add a `.gitignore`.
   - The `fsbhoa_vehicle.service` systemd unit is installed in `/etc/systemd/system` but isn't in the repo. Add it, along with install steps.
   - `rebuild.sh` uses `$(pwd)`, so it works only when run from the repo root. Use the script's own directory.
+- [ ] **37. South Exit's night shutter, from production.** Decided 2026-10-25 (the user): when production gets `vehicle_service`, production re-saves .137's night profile itself each evening, once the camera has switched to night (its scene photos turn colorless), replacing the session's re-save by hand at about 18:33. It writes to a camera, so it runs only when the environment is production (fail closed). .137 can't take the fixed day shutter the other three use (CLAUDE.md, "Image settings and night reads").
 
 ## Security
 
