@@ -8,9 +8,11 @@ import (
 	"strings"
 )
 
-// The LPR cameras' description of a vehicle they read no plate for (CLAUDE.md, "Plate reads:
-// FTP from the cameras"). For such a read the camera prints its guess at the vehicle on the
-// scene photo, two lines over the bottom left:
+// The LPR cameras' description of a vehicle (CLAUDE.md, "Plate reads: FTP from the cameras").
+// The camera prints its guess at the vehicle on the scene photo, two lines over the bottom
+// left, for most reads without a plate and, by day, about half of those with one (2026-10-25:
+// 25 daytime plate reads a camera, North Enter 24, South Enter 15, North Exit 12, South Exit
+// 4); otherwise every field says "Unknown":
 //
 //	Vehicle Color:grey  Vehicle Year:2017  Vehicle Type:suv
 //	Vehicle Brand:Lincoln  Vehicle Model:Lincoln_MKC
@@ -19,8 +21,10 @@ import (
 // camera setting sends more). The text is a fixed pixel font on an 18-pixel grid from the left
 // edge, the same at 2592 x 1520 (.137, .139, .140) and 1920 x 1080 (.138), white with a black
 // outline, so each cell is matched with the letters' shapes (osd_font.go, cut from the photos
-// of 2026-10-18 to 25). On those photos (83 reads without a plate) both lines read whole in
-// 82; Tesseract misread the font ("201?", "Teela"). In infrared at night the camera's guess is
+// of 2026-10-18 to 25). Both lines read whole in 82 of 83 reads without a plate, and in 538
+// of 600 daytime reads (the rest lose letters where a white car is behind the text);
+// Tesseract misread the font ("201?", "Teela"). The camera misspells some names itself
+// ("Honda_Accoro", "Buick_Larcosse"). In infrared at night the camera's guess is
 // worthless (a black Toyota sedan was a "black 2016 school bus"), so colorless photos are
 // skipped.
 const (
@@ -79,8 +83,15 @@ func osdTextMask(img image.Image) (mask [][]bool, ok bool) {
 
 // osdLine reads `cells` cells of the text line whose cells start at row top.
 func osdLine(mask [][]bool, top, cells int) string {
+	s, _ := osdLineDiff(mask, top, cells)
+	return s
+}
+
+// osdLineDiff is osdLine with how far its cells were from their letters, in pixels.
+func osdLineDiff(mask [][]bool, top, cells int) (string, int) {
 	var sb strings.Builder
 	var cell [osdCellH]uint32
+	total := 0
 	for k := 0; k < cells; k++ {
 		x0, ink := k*osdCellW, 0
 		if top+osdCellH > len(mask) || x0+osdCellW > len(mask[0]) {
@@ -110,17 +121,19 @@ func osdLine(mask [][]bool, top, cells int) string {
 				best, bestDiff = g.ch, diff
 			}
 		}
+		total += bestDiff
 		if bestDiff <= max(osdMaxDiff, ink*3/10) {
 			sb.WriteRune(best)
 		} else {
 			sb.WriteByte(' ')
 		}
 	}
-	return strings.TrimRight(sb.String(), " ")
+	return strings.TrimRight(sb.String(), " "), total
 }
 
 // osdText reads the camera's "Vehicle ..." lines from a scene photo: each line is found where
-// its first seven cells read "Vehicle". Nil for a colorless (infrared) photo.
+// its first seven cells read "Vehicle", then settled on the row within 3 where they match best
+// (one row off clips the tall letters). Nil for a colorless (infrared) photo.
 func osdText(img image.Image) []string {
 	if colorless(img) {
 		return nil
@@ -132,8 +145,14 @@ func osdText(img image.Image) []string {
 	var lines []string
 	for top := 0; top+osdCellH <= len(mask); top++ {
 		if osdLine(mask, top, 7) == "Vehicle" {
-			lines = append(lines, osdLine(mask, top, osdMaxCells))
-			top += osdCellH - 1
+			best, bestDiff := top, 1<<30
+			for t := max(0, top-3); t <= top+3 && t+osdCellH <= len(mask); t++ {
+				if s, d := osdLineDiff(mask, t, 7); s == "Vehicle" && d < bestDiff {
+					best, bestDiff = t, d
+				}
+			}
+			lines = append(lines, osdLine(mask, best, osdMaxCells))
+			top = best + osdCellH - 1
 		}
 	}
 	return lines
@@ -141,23 +160,29 @@ func osdText(img image.Image) []string {
 
 // osdFields picks the "<Label>:<value>" fields from the lines (labels lower case: color,
 // year, type, brand, model). Fields are two spaces apart, so a value may have single spaces
-// ("pick up truck").
+// ("pick up truck"), but only the type does: another value with a space has a letter that
+// didn't read (a white car behind the text) and is left out, as is a field whose label
+// didn't read.
 func osdFields(lines []string) map[string]string {
 	fields := map[string]string{}
 	for _, line := range lines {
 		for _, part := range strings.Split(line, "  ") {
 			label, value, ok := strings.Cut(strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(part), "Vehicle ")), ":")
 			value = strings.TrimSpace(value)
-			if ok && value != "" && value != "Unknown" {
-				fields[strings.ToLower(label)] = value
+			label = strings.ToLower(label)
+			if !ok || value == "" || value == "Unknown" || (label != "type" && strings.Contains(value, " ")) {
+				continue
+			}
+			switch label {
+			case "color", "year", "type", "brand", "model":
+				fields[label] = value
 			}
 		}
 	}
 	return fields
 }
 
-// osdDescribe is the card's line for a vehicle without a plate, such as "grey 2017 Lincoln MKC
-// (suv)": the color, the year, the model (which starts with the make) or else the make, and
+// osdDescribe is the card's line for a vehicle, such as "grey 2017 Lincoln MKC (suv)": the color, the year, the model (which starts with the make) or else the make, and
 // the type, leaving out what the camera didn't know. "" when it knew nothing.
 func osdDescribe(fields map[string]string) string {
 	var parts []string

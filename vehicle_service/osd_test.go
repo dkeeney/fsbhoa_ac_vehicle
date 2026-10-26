@@ -114,3 +114,10 @@ func TestOSDReplay(t *testing.T) {
 		fmt.Printf("%s %q %q\n", filepath.Base(f), desc, lines)
 	}
 }
+
+func TestOSDFieldsDropMisreads(t *testing.T) {
+	got := osdDescribe(osdFields([]string{"Vehicle Color g  y  Vehicle Year:2013  Vehicle Type:saloon car", "Vehicle Brand:Bui k  Vehicle Model:Buick_Excelle"}))
+	if got != "2013 Buick Excelle (saloon car)" {
+		t.Errorf("%q", got)
+	}
+}

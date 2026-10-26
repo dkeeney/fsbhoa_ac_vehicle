@@ -113,15 +113,16 @@ func (p *PlateEvents) Send(r PlateRead) bool {
 	if !r.SceneArrived.IsZero() {
 		details["scene_arrived"] = r.SceneArrived.Format(time.RFC3339Nano)
 	}
-	var vehicleDesc string
 	if r.NoPlate {
 		details["no_plate"], details["camera_plate"] = true, r.CameraPlate
-		// The camera's guess at the vehicle, printed on its scene photo (osd.go)
-		if r.SceneFile != "" {
-			var lines []string
-			if vehicleDesc, lines = sceneDescription(r.SceneFile); len(lines) > 0 {
-				details["camera_text"] = lines
-			}
+	}
+	// The camera's guess at the vehicle, printed on its scene photo (osd.go): by day, for about
+	// half the reads with a plate and most without
+	var vehicleDesc string
+	if r.SceneFile != "" {
+		var lines []string
+		if vehicleDesc, lines = sceneDescription(r.SceneFile); len(lines) > 0 {
+			details["camera_text"] = lines
 		}
 	}
 	if r.Missing != "" {
