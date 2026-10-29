@@ -279,6 +279,8 @@ func main() {
 	// Recorded video of a lane camera from the NVR, for the live monitor (this machine only)
 	nvrVideo := NewNVRVideo()
 	nvrVideo.SetConfig(cfg)
+	// By day, an unread car's front plate from that video, for its card (front_plate.go)
+	plateEvents.SetFront(NewFrontPlates(nvrVideo, overviewPhotos, journal))
 
 	// Saving the vehicle settings rewrites the config file. Apply the lanes and the
 	// DoorKing-only and plate read events settings without a restart.

@@ -21,6 +21,7 @@ type PlateEvents struct {
 	enabled    atomic.Bool
 	dispatcher *Dispatcher
 	photos     *OverviewPhotos // the lane's overview photo of the car; nil: none
+	front      *FrontPlates    // reads an unread car's front plate from the video; nil: none
 }
 
 // PlateRead is one camera read, as journaled (lpr.go).
@@ -185,6 +186,13 @@ func (p *PlateEvents) Send(r PlateRead) bool {
 // its lane's lead from the capture (overviewPhotoLead, 4 s, or auto).
 const countPhotoBefore = 500 * time.Millisecond
 
+// SetFront sets the front plate reader for unread cars. Call before cars arrive.
+func (p *PlateEvents) SetFront(f *FrontPlates) { p.front = f }
+
+// frontPlateNote is the card's note for a plate read from the front, in the overview camera's
+// video: it may be a decorative plate, not the registration (2026-10-29: "JOE JODI").
+const frontPlateNote = "Front plate, read from the video"
+
 // SendUnread queues a car that came in with no plate read (unread.go) as a vehicle event with
 // no plate and only the overview photo, when the setting is on, so the monitor has an entry
 // for it too (core's card says "NO PLATE READ" for an entry without a plate or plate photos).
@@ -209,15 +217,26 @@ func (p *PlateEvents) SendUnread(c unreadCar) bool {
 			details["overview_photo_at"] = at.Format(time.RFC3339Nano)
 		}
 	}
+	// By day, its front plate from the video: the card then carries it, with the plate's crop
+	plate, plateImage, note := "", []byte(nil), c.note
+	if fp, ok := p.front.Read(c); ok {
+		plate, plateImage = fp.Plate, fp.crop
+		details["front_plate"] = map[string]interface{}{"confidence": fp.Confidence, "frames": fp.Frames, "read": fp.Read}
+		note = frontPlateNote
+		if c.note != "" {
+			note += "; " + c.note
+		}
+	}
 	uid := "unread_" + c.camera + "_" + c.start.Local().Format("20060102-150405.000")
 	payload, err := json.Marshal(map[string]interface{}{
 		"event_uid":          uid,
 		"event_timestamp":    c.start.Local().Format("2006-01-02 15:04:05.000"),
 		"gate_identifier":    c.gate,
 		"direction":          "entry",
-		"lpr_plate":          "",
+		"lpr_plate":          plate,
+		"lpr_image_b64":      b64(plateImage),
 		"overview_image_b64": b64(overview),
-		"event_note":         c.note,
+		"event_note":         note,
 		"note_image_b64":     b64(c.notePhoto),
 		"raw_details":        details,
 	})
@@ -229,7 +248,7 @@ func (p *PlateEvents) SendUnread(c unreadCar) bool {
 		log.Printf("[ERROR] Could not queue unread car event %s: %v", uid, err)
 		return false
 	}
-	log.Printf("[DISPATCH] Unread car event %s: %s", uid, c.gate)
+	log.Printf("[DISPATCH] Unread car event %s: %s %q", uid, c.gate, plate)
 	return true
 }
 

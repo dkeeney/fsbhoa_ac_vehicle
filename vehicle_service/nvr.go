@@ -187,6 +187,50 @@ func (v *NVRVideo) channel(ctx context.Context, c NVRConfig, ip string) (int, er
 	return n, nil
 }
 
+// nvrPlayback is the RTSP address of channel n's recording from start, for length.
+func nvrPlayback(c NVRConfig, host string, n int, start time.Time, length time.Duration) string {
+	return fmt.Sprintf("rtsp://%s:%s@%s:%d/chID=%d&date=%s&time=%s&timelen=%d&streamType=main&linkType=tcp&action=playback",
+		url.QueryEscape(c.User), nvrPasswordHash(c.Password), host, nvrRTSPPort, n,
+		start.Format("2006-01-02"), start.Format("15:04:05"), int((length+nvrExtraLength)/time.Second))
+}
+
+// Frames saves the camera's recorded frames from start, for length, fps a second, at full size,
+// as dir/f001.jpg, f002.jpg and on (front_plate.go). It waits for one of the nvrMaxStreams.
+func (v *NVRVideo) Frames(ctx context.Context, ip string, start time.Time, length time.Duration, fps int, dir string) error {
+	c := v.cfg.Load()
+	if c == nil || c.URL == "" || c.User == "" || c.Password == "" {
+		return errors.New("no NVR set in the vehicle settings")
+	}
+	nvr, err := url.Parse(c.URL)
+	if err != nil || nvr.Hostname() == "" {
+		return errors.New("the NVR URL in the vehicle settings isn't a URL")
+	}
+	n, err := v.channel(ctx, *c, ip)
+	if err != nil {
+		return err
+	}
+	select {
+	case v.streams <- struct{}{}:
+		defer func() { <-v.streams }()
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	cmd := exec.CommandContext(ctx, "ffmpeg", "-nostdin", "-loglevel", "error", "-y",
+		"-rtsp_transport", "tcp", "-timeout", "10000000", "-i", nvrPlayback(*c, nvr.Hostname(), n, start, length),
+		"-t", strconv.FormatFloat(length.Seconds(), 'f', 1, 64), "-an", "-vf", fmt.Sprintf("fps=%d", fps), "-q:v", "2",
+		dir+"/f%03d.jpg")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	err = cmd.Run()
+	if err != nil {
+		hash := nvrPasswordHash(c.Password)
+		// ffmpeg's messages can hold the address with the login: never pass them on unmasked
+		msg := strings.TrimSpace(strings.ReplaceAll(strings.ReplaceAll(stderr.String(), hash, "***"), url.QueryEscape(c.User)+":", "***:"))
+		return fmt.Errorf("channel %d: %v %.200s", n, err, msg)
+	}
+	return nil
+}
+
 // ServeHTTP is /video?camera=<address>&at=<YYYY-MM-DD HH:MM:SS>&before=<s>&length=<s>&quality=sharp:
 // the camera's recording from `before` seconds before `at`, for `length` seconds (defaults 15
 // and 60). The camera must be one of the lanes'. This machine only (WordPress passes it on).
@@ -251,9 +295,7 @@ func (v *NVRVideo) ServeHTTP(w http.ResponseWriter, r *http.Request, gates *Gate
 	http.NewResponseController(w).SetWriteDeadline(time.Now().Add(length + nvrStreamGrace))
 
 	hash := nvrPasswordHash(c.Password)
-	src := fmt.Sprintf("rtsp://%s:%s@%s:%d/chID=%d&date=%s&time=%s&timelen=%d&streamType=main&linkType=tcp&action=playback",
-		url.QueryEscape(c.User), hash, nvr.Hostname(), nvrRTSPPort, n,
-		start.Format("2006-01-02"), start.Format("15:04:05"), int((length+nvrExtraLength)/time.Second))
+	src := nvrPlayback(*c, nvr.Hostname(), n, start, length)
 	cmd := exec.CommandContext(ctx, "ffmpeg", "-nostdin", "-loglevel", "error",
 		"-rtsp_transport", "tcp", "-timeout", "10000000", "-i", src,
 		"-t", strconv.Itoa(int(length/time.Second)), "-an",
