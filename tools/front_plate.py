@@ -8,7 +8,11 @@ the detector works at 608. Stops once one text has been read in MIN_FRAMES frame
 confidence of at least MIN_CONFIDENCE, and prints JSON: {"plate", "confidence", "frames", "read"}
 ("plate" empty when no text got there; "read" the frames that read it) and writes that plate's
 best crop to <crop out>. One text across frames is what tells a plate from a blur: a blurred
-plate reads differently in each frame (2026-10-29, 14 unread cars at South Enter).
+plate reads differently in each frame (2026-10-29, 14 unread cars at South Enter). Plates
+narrower than MIN_WIDTH of the frame are left out: they belong to vehicles further away, such
+as a truck parked beyond the keypad (2026-10-29 11:44: its plate, 52 pixels wide at 4K, was read
+for a car without a front plate). The car's own plate, between the keypad and the arm, is 66 to
+180 pixels wide.
 """
 import sys, json, collections
 import cv2
@@ -16,6 +20,7 @@ from fast_alpr import ALPR
 
 MIN_FRAMES = 2
 MIN_CONFIDENCE = 0.9
+MIN_WIDTH = 0.02  # of the frame's width: 77 pixels at 4K
 TILE_W, TILE_H = 2240, 1260
 
 def tiles(img):
@@ -39,6 +44,9 @@ def main():
             for r in alpr.predict(t):
                 if r.ocr is None or not r.ocr.text:
                     continue
+                b = r.detection.bounding_box
+                if b.x2 - b.x1 < MIN_WIDTH * img.shape[1]:
+                    continue
                 text = r.ocr.text.strip('_ ').replace('_', '')
                 if len(text) < 2:
                     continue
@@ -47,7 +55,6 @@ def main():
                 if c > seen.get(text, 0):
                     seen[text] = c
                     if c > best.get(text, (0, None))[0]:
-                        b = r.detection.bounding_box
                         best[text] = (c, img[max(0, y + b.y1 - 20):y + b.y2 + 20, max(0, x + b.x1 - 30):x + b.x2 + 30].copy())
         for text, c in seen.items():
             confs[text].append(c)
