@@ -18,6 +18,9 @@ define( 'FSBHOA_AC_VEHICLE_URL', plugin_dir_url( __FILE__ ) );
 // Load Settings Class
 require_once FSBHOA_AC_VEHICLE_DIR . 'includes/class-fsbhoa-vehicle-settings.php';
 require_once FSBHOA_AC_VEHICLE_DIR . 'includes/class-fsbhoa-vehicle-video.php';
+if ( defined( 'WP_CLI' ) && WP_CLI ) {
+	require_once FSBHOA_AC_VEHICLE_DIR . 'includes/class-fsbhoa-vehicle-cli.php'; // settings export and import
+}
 
 /**
  * Initialize plugin components.

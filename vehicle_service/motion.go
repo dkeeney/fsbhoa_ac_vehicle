@@ -332,11 +332,16 @@ func (w *cameraWatch) saveOne(f motionFrame) {
 		p.capped = true
 		return
 	}
-	if len(p.frames) == 0 { // check the disk once per pass
-		w.lowDisk = freeBytes(w.m.dir) < frameMinFreeBytes
-		if w.lowDisk {
-			log.Printf("[MOTION] %s: less than %d GB free on %s; not saving frames", w.ip, frameMinFreeBytes>>30, w.m.dir)
+	if len(p.frames) == 0 { // check the disk once per pass (every frame while it is low, since none is kept); log only changes
+		low := freeBytes(w.m.dir) < frameMinFreeBytes
+		if low != w.lowDisk {
+			if low {
+				log.Printf("[MOTION] %s: less than %d GB free on %s; not saving frames", w.ip, frameMinFreeBytes>>30, w.m.dir)
+			} else {
+				log.Printf("[MOTION] %s: %d GB free again on %s; saving frames", w.ip, frameMinFreeBytes>>30, w.m.dir)
+			}
 		}
+		w.lowDisk = low
 	}
 	if w.lowDisk {
 		return
