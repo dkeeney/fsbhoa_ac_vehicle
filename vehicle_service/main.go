@@ -281,6 +281,10 @@ func main() {
 	nvrVideo.SetConfig(cfg)
 	// By day, an unread car's front plate from that video, for its card (front_plate.go)
 	plateEvents.SetFront(NewFrontPlates(nvrVideo, overviewPhotos, journal))
+	// The LPR cameras' day/night switch by the sun, set each day (sunswitch.go; production only)
+	sunSwitch := NewSunSwitcher(journal)
+	sunSwitch.SetConfig(cfg)
+	go sunSwitch.Run(make(chan struct{}))
 
 	// Saving the vehicle settings rewrites the config file. Apply the lanes and the
 	// DoorKing-only and plate read events settings without a restart.
@@ -291,6 +295,7 @@ func main() {
 		motion.SetRegions(next.MotionRegions)
 		carCounter.SetZones(next.CountZones)
 		nvrVideo.SetConfig(next)
+		sunSwitch.SetConfig(next)
 		log.Printf("[CONFIG] Reloaded: %d entrance lanes, %d exit lanes", len(next.Gates), len(next.ExitLanes))
 		if changed := restartNeeded(cfg, next); len(changed) > 0 {
 			log.Printf("[CONFIG] Changed settings that need a restart of vehicle_service to apply: %v", changed)

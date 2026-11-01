@@ -390,22 +390,27 @@ func (o *OverviewPhotos) reolinkSnap(client *http.Client, ip string) ([]byte, er
 // reolinkLogin reads the Reolink login from the passwords file. Read each time it is needed,
 // so a changed password is picked up without a restart.
 func (o *OverviewPhotos) reolinkLogin() (string, string, error) {
-	if o.loginFile == "" {
+	return readCameraLogin(o.loginFile, reolinkLoginLabel)
+}
+
+// readCameraLogin reads a "<label> <user> <password>" line of the cameras' passwords file.
+func readCameraLogin(file, label string) (string, string, error) {
+	if file == "" {
 		return "", "", errors.New("no home folder for the cameras' passwords file")
 	}
-	f, err := os.Open(o.loginFile)
+	f, err := os.Open(file)
 	if err != nil {
 		return "", "", fmt.Errorf("cameras' passwords file: %w", err)
 	}
 	defer f.Close()
 	sc := bufio.NewScanner(f)
 	for sc.Scan() {
-		if rest, ok := strings.CutPrefix(sc.Text(), reolinkLoginLabel); ok {
+		if rest, ok := strings.CutPrefix(sc.Text(), label); ok {
 			// The password is everything after the user, as the shell's `read -r user password` takes it
 			if user, password, ok := strings.Cut(strings.TrimSpace(rest), " "); ok && strings.TrimSpace(password) != "" {
 				return user, strings.TrimSpace(password), nil
 			}
 		}
 	}
-	return "", "", fmt.Errorf("no %q line with a user and a password in %s", reolinkLoginLabel, o.loginFile)
+	return "", "", fmt.Errorf("no %q line with a user and a password in %s", label, file)
 }

@@ -92,6 +92,8 @@ class FSBHOA_Vehicle_Settings {
 			'exit_lanes'           => array(),
 			'motion_regions'       => array(),
 			'count_zones'          => array(),
+			'site_location'        => '',
+			'sun_switch'           => array(),
 		);
 	}
 
@@ -230,6 +232,24 @@ class FSBHOA_Vehicle_Settings {
 			array( 'label_for' => 'fsbhoa_vehicle_count_zones' )
 		);
 
+		add_settings_field(
+			'site_location',
+			__( 'Site Location', 'fsbhoa-ac-vehicle' ),
+			array( $this, 'render_site_location_field' ),
+			self::PAGE_SLUG,
+			'fsbhoa_vehicle_sources_section',
+			array( 'label_for' => 'fsbhoa_vehicle_site_location' )
+		);
+
+		add_settings_field(
+			'sun_switch',
+			__( 'Day/Night by the Sun', 'fsbhoa-ac-vehicle' ),
+			array( $this, 'render_sun_switch_field' ),
+			self::PAGE_SLUG,
+			'fsbhoa_vehicle_sources_section',
+			array( 'label_for' => 'fsbhoa_vehicle_sun_switch' )
+		);
+
 		add_settings_section(
 			'fsbhoa_vehicle_policy_section',
 			__( 'Correlation & Logging', 'fsbhoa-ac-vehicle' ),
@@ -318,6 +338,8 @@ class FSBHOA_Vehicle_Settings {
 		$sanitized['exit_lanes']  = $this->sanitize_lanes( $input['exit_lanes'] ?? array(), 'exit_lanes', $ips );
 		$sanitized['motion_regions'] = $this->sanitize_motion_regions( $input['motion_regions'] ?? '', $sanitized );
 		$sanitized['count_zones']    = $this->sanitize_count_zones( $input['count_zones'] ?? '', $sanitized );
+		$sanitized['site_location']  = $this->sanitize_site_location( $input['site_location'] ?? '' );
+		$sanitized['sun_switch']     = $this->sanitize_sun_switch( $input['sun_switch'] ?? '', $sanitized );
 
         if ( ! $this->write_config_from_array( $sanitized ) ) {
 			add_settings_error(
@@ -698,6 +720,99 @@ class FSBHOA_Vehicle_Settings {
 				}
 			}
 			$lines[] = implode( ' ', $words );
+		}
+		return implode( "\n", $lines );
+	}
+
+	/**
+	 * The site's latitude and longitude, "<lat>, <lon>" in degrees (north and east positive), for
+	 * the sun's times (Day/Night by the Sun). Empty: none. A value that doesn't fit is dropped
+	 * with a message.
+	 */
+	private function sanitize_site_location( $value ) {
+		$value = trim( sanitize_text_field( (string) $value ) );
+		if ( '' === $value ) {
+			return '';
+		}
+		$parts = array_map( 'trim', explode( ',', $value ) );
+		if ( 2 !== count( $parts ) || ! is_numeric( $parts[0] ) || ! is_numeric( $parts[1] ) || abs( (float) $parts[0] ) > 66 || abs( (float) $parts[1] ) > 180 ) {
+			add_settings_error(
+				self::OPTION_NAME,
+				'fsbhoa_vehicle_site_location',
+				sprintf(
+					/* translators: %s: the value entered */
+					__( 'Site Location "%s" was not saved: it must be the latitude and longitude in degrees, such as 35.40, -118.90 (west is negative; within 66 degrees of the equator, where the sun rises and sets every day).', 'fsbhoa-ac-vehicle' ),
+					$value
+				)
+			);
+			return '';
+		}
+		return round( (float) $parts[0], 4 ) . ', ' . round( (float) $parts[1], 4 );
+	}
+
+	/**
+	 * Parses the Day/Night by the Sun text, one camera a line: "<LPR camera IP> [night=<minutes>]
+	 * [day=<minutes>]", a lane's LPR camera whose day/night switch vehicle_service sets each day
+	 * from the sun: to night at sunset plus night= minutes (default 10), to day at sunrise minus
+	 * day= minutes (default 5), each -120 to 120 (TODO #37). A line that doesn't fit is dropped
+	 * with a message.
+	 *
+	 * @return array[] camera, night_after, day_before
+	 */
+	private function sanitize_sun_switch( $text, $options ) {
+		if ( is_array( $text ) ) { // already parsed (an option saved before)
+			$text = self::sun_switch_text( $text );
+		}
+		$cameras = array();
+		foreach ( array( 'gates', 'exit_lanes' ) as $table ) {
+			foreach ( (array) ( $options[ $table ] ?? array() ) as $lane ) {
+				if ( ! empty( $lane['lpr_ip'] ) ) {
+					$cameras[] = $lane['lpr_ip'];
+				}
+			}
+		}
+		$out  = array();
+		$seen = array();
+		foreach ( preg_split( '/\r\n|\r|\n/', (string) $text ) as $line ) {
+			$line = trim( sanitize_text_field( $line ) );
+			if ( '' === $line || '#' === $line[0] ) {
+				continue;
+			}
+			$words = preg_split( '/\s+/', $line );
+			$entry = array( 'camera' => array_shift( $words ), 'night_after' => 10, 'day_before' => 5 );
+			$ok    = in_array( $entry['camera'], $cameras, true ) && ! isset( $seen[ $entry['camera'] ] );
+			foreach ( $words as $w ) {
+				if ( preg_match( '/^(night|day)=(-?\d{1,3})$/', $w, $m ) && abs( (int) $m[2] ) <= 120 ) {
+					$entry[ 'night' === $m[1] ? 'night_after' : 'day_before' ] = (int) $m[2];
+				} else {
+					$ok = false;
+				}
+			}
+			if ( ! $ok ) {
+				add_settings_error(
+					self::OPTION_NAME,
+					'fsbhoa_vehicle_sun_switch',
+					sprintf(
+						/* translators: %s: the line entered */
+						__( 'Day/Night by the Sun line "%s" was not saved: it must be a lane\'s LPR camera, once, then optionally night=<minutes after sunset> and day=<minutes before sunrise>, each -120 to 120.', 'fsbhoa-ac-vehicle' ),
+						$line
+					)
+				);
+				continue;
+			}
+			$seen[ $entry['camera'] ] = true;
+			$out[]                    = $entry;
+		}
+		return $out;
+	}
+
+	/**
+	 * The saved sun switch cameras as the field's text, one a line.
+	 */
+	private static function sun_switch_text( $entries ) {
+		$lines = array();
+		foreach ( (array) $entries as $e ) {
+			$lines[] = sprintf( '%s night=%d day=%d', $e['camera'], $e['night_after'], $e['day_before'] );
 		}
 		return implode( "\n", $lines );
 	}
@@ -1106,6 +1221,33 @@ class FSBHOA_Vehicle_Settings {
 		<?php
 	}
 
+	public function render_site_location_field() {
+		$options = self::get_options();
+		?>
+		<input type="text" id="fsbhoa_vehicle_site_location"
+			   name="<?php echo esc_attr( self::OPTION_NAME . '[site_location]' ); ?>"
+			   value="<?php echo esc_attr( $options['site_location'] ); ?>"
+			   class="regular-text code" placeholder="35.40, -118.90" />
+		<p class="description">
+			<?php esc_html_e( 'The gates\' latitude and longitude in degrees (west is negative), for the times of sunrise and sunset in Day/Night by the Sun.', 'fsbhoa-ac-vehicle' ); ?>
+		</p>
+		<?php
+	}
+
+	public function render_sun_switch_field() {
+		$options = self::get_options();
+		?>
+		<textarea id="fsbhoa_vehicle_sun_switch"
+				 name="<?php echo esc_attr( self::OPTION_NAME . '[sun_switch]' ); ?>"
+				 rows="2"
+				 class="large-text code"
+				 placeholder="192.168.107.137 night=10 day=5"><?php echo esc_textarea( self::sun_switch_text( $options['sun_switch'] ) ); ?></textarea>
+		<p class="description">
+			<?php esc_html_e( 'LPR cameras whose switch between day and night vehicle_service sets from the sun, one a line: the camera\'s address (a lane\'s LPR camera), then optionally night=<minutes after sunset> (default 10) and day=<minutes before sunrise> (default 5). Each day between 11:00 and 15:00 it sets the camera to switch by time, at those times, and reads them back; a camera taken off the list goes back to switching by light. A camera that switches to night by itself doesn\'t apply its night profile\'s shutter until it is saved again; a switch by time does (South Exit\'s .137, 2026-10-30). It changes the camera, so only on production; elsewhere it is only recorded in the journal. Needs the Site Location, and the cameras\' login on the "Speco Cameras" line of the service user\'s passwords file. Applied without a restart.', 'fsbhoa-ac-vehicle' ); ?>
+		</p>
+		<?php
+	}
+
 	public function render_correlation_field() {
 		$options = self::get_options();
 		?>
@@ -1383,7 +1525,14 @@ class FSBHOA_Vehicle_Settings {
 			'nvr_url'              => (string) ( $options['nvr_url'] ?? '' ),
 			'nvr_user'             => (string) ( $options['nvr_user'] ?? '' ),
 			'nvr_password'         => (string) ( $options['nvr_password'] ?? '' ),
+			'sun_switch'           => array_values( is_array( $options['sun_switch'] ?? null ) ? $options['sun_switch'] : array() ),
 		);
+		// The site's location, for the sun's times; none when not set
+		$site = array_map( 'trim', explode( ',', (string) ( $options['site_location'] ?? '' ) ) );
+		if ( 2 === count( $site ) && is_numeric( $site[0] ) && is_numeric( $site[1] ) ) {
+			$config['site_latitude']  = (float) $site[0];
+			$config['site_longitude'] = (float) $site[1];
+		}
 
 		$json_data = json_encode($config, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES );
 

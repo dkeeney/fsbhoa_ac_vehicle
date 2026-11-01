@@ -46,6 +46,11 @@ type ServiceConfig struct {
 	NVRUser     string `json:"nvr_user"`
 	NVRPassword string `json:"nvr_password"`
 
+	// LPR cameras whose day/night switch follows the sun (sunswitch.go), and the site's location
+	SunSwitch     []SunSwitch `json:"sun_switch"`
+	SiteLatitude  float64     `json:"site_latitude"`
+	SiteLongitude float64     `json:"site_longitude"`
+
 	// Local runtime fields (not in JSON, populated via flags/defaults)
 	ConfigPath     string        `json:"-"`
 	WindowDuration time.Duration `json:"-"`
