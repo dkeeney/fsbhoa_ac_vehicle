@@ -92,6 +92,23 @@ const (
 	// "approach" emptied for one at the keypad (decided countApproachWindow later)
 	frigateBefore, frigateAfterBeyond, frigateAfterApproach = 3 * time.Second, 3 * time.Second, 8 * time.Second
 
+	// A back-out at the keypad is held while "approach" still differs from the lane as it was
+	// before the car came (countBacked), up to this long: sent when the lane is clear again
+	// (the car left), dropped when a car is counted in meanwhile (it was waiting, and faded into
+	// the 40 s background). 2026-10-30: a car waiting about 80 s at the lowered arm at dusk made
+	// two "Backed out" cards (18:22, 18:23); the delivery van that really backed out (18:00) had
+	// left the lane 5 s after its back-out was decided.
+	countBackedHold = 3 * time.Minute
+	// The lane before the car came is an empty-lane frame from this long or more before
+	// "approach" filled (on 2026-10-30 at 18:22 the frame 1.1 s before had the car in it, coming
+	// from the keypad), of those kept for countBackedRefKeep.
+	countBackedRefBefore, countBackedRefKeep = 5 * time.Second, 30 * time.Second
+	// The lane is clear when less than countBackedClear of it differs from that frame: "approach"
+	// grown by countBackedReach blocks, and "beyond". At 18:22 that evening the waiting car was
+	// 0.10 to 0.12 of it (0.02 of "approach" alone).
+	countBackedReach = 4
+	countBackedClear = 0.05
+
 	autoWidth, autoHeight = 96, 54 // the overview photo's "auto" pick compares frames at this size
 )
 
@@ -202,26 +219,45 @@ func (c *CarCounter) HandleFrame(ip string, f photoFrame) {
 		c.debugf("[COUNT] %s: bad frame: %v", ip, err)
 		return
 	}
-	for _, e := range zc.step(f.at, countGray(img)) {
+	g := countGray(img)
+	for _, e := range zc.step(f.at, g) {
 		e = c.classify(ip, e)
+		gate, _ := e.data["gate"].(string)
+		sendable := e.kind == "car_backed" && e.data["frigate_car"] == nil && c.backed != nil && zc.beyondZone.Plate > 0 && gate != "" && e.data["direction"] == "entry"
+		if sendable && e.data["went_back"] == nil {
+			if zc.held != nil {
+				e.data["held_with"] = zc.held.e.data["approach_start"] // the same waiting car again
+				sendable = false
+			} else if ref := zc.laneBefore(e.approach); ref != nil {
+				e.data["held"] = true
+			}
+		}
 		c.journal.Write(e.kind, e.data)
 		log.Printf("[COUNT] %s: %s %v", ip, e.kind, e.data["beyond_start"])
-		gate, _ := e.data["gate"].(string)
 		if gate == "" || e.data["direction"] != "entry" {
 			continue
 		}
 		// A car that backed out (at the keypad, or at the arm) is a clue for staff: a driver
 		// who had to back up and enter a code again, or one let in by someone else. Sent only
 		// where the count is matched with the plate reads (plate=), where it holds up.
-		if e.kind == "car_backed" && e.data["frigate_car"] == nil && c.backed != nil && zc.beyondZone.Plate > 0 {
+		if sendable {
 			photoAt := e.approach.Add(e.end.Sub(e.approach) / 2) // halfway through its time in "approach"
 			if e.data["went_back"] == true {
 				photoAt = e.start // as it reached past the arm
 			}
-			c.backed(ip, gate, e, time.Duration(zc.beyondZone.Plate*float64(time.Second)), photoAt)
+			e := e
+			send := func() { c.backed(ip, gate, e, time.Duration(zc.beyondZone.Plate*float64(time.Second)), photoAt) }
+			if e.data["held"] == true {
+				zc.held = &heldBacked{e: e, ref: zc.laneBefore(e.approach), send: send}
+			} else {
+				send()
+			}
 		}
 		if e.kind != "car" {
 			continue
+		}
+		if zc.held != nil { // the car that seemed to back out was waiting, and has now come in
+			c.releaseBacked(zc, "drove_in", e.start)
 		}
 		var note string
 		var notePhoto []byte
@@ -237,6 +273,52 @@ func (c *CarCounter) HandleFrame(ip string, f photoFrame) {
 			}
 			c.unread.Car(ip, gate, e.approach, e.start, e.end, time.Duration(window*float64(time.Second)), note, notePhoto, report)
 		}
+	}
+	c.checkBacked(zc, f.at, g)
+}
+
+// checkBacked sends a held back-out once the lane (both zones, with countBackedReach blocks
+// around "approach": a car waiting at the lowered arm sits partly outside it) no longer differs
+// from the lane as it was before the car came, and no car is being counted (one going in
+// empties "approach" before it is counted), or once countBackedHold has passed.
+func (c *CarCounter) checkBacked(zc *zoneCounter, t time.Time, g []uint8) {
+	h := zc.held
+	if h == nil || zc.beyondOn || zc.pending != nil {
+		return
+	}
+	if zc.waitArea == nil {
+		zc.waitArea = dilateMask(zc.approach, countBackedReach)
+		for i, in := range zc.beyond {
+			zc.waitArea[i] = zc.waitArea[i] || in
+		}
+	}
+	changed, n, k := blockChanges(g, h.ref), 0, 0
+	for i, in := range zc.waitArea {
+		if in {
+			n++
+			if changed[i] {
+				k++
+			}
+		}
+	}
+	if n > 0 && float64(k)/float64(n) < countBackedClear {
+		c.releaseBacked(zc, "lane_clear", t)
+	} else if t.Sub(h.e.end) > countBackedHold {
+		c.releaseBacked(zc, "still_in_view", t)
+	}
+}
+
+// releaseBacked ends a held back-out: sent unless its car drove in, and journaled
+// ("backed_held": the outcome, drove_in, lane_clear or still_in_view, and when).
+func (c *CarCounter) releaseBacked(zc *zoneCounter, outcome string, at time.Time) {
+	h := zc.held
+	zc.held = nil
+	c.journal.Write("backed_held", map[string]interface{}{
+		"camera_ip": zc.ip, "gate": h.e.data["gate"], "direction": "entry",
+		"approach_start": h.e.data["approach_start"], "outcome": outcome, "at": at.Local().Format(journalTimeFormat),
+	})
+	if outcome != "drove_in" {
+		h.send()
 	}
 }
 
@@ -316,6 +398,59 @@ type zoneCounter struct {
 	pending              *countEvent // "beyond" emptied: a car in, unless it reverses (decided within countPathWait)
 	reversedInBeyond     bool        // the front fell back while "beyond" was full
 	backMax, backFront   float64     // how far it got and where it fell back to, for the journal
+	emptyLanes           []laneFrame // recent frames with both zones empty and nothing pending: the lane before a car came
+	waitArea             []bool      // where a held back-out's car may still be (checkBacked)
+	held                 *heldBacked // a back-out at the keypad, held while the car may still be in the lane (countBackedHold)
+}
+
+// dilateMask grows a block mask by r blocks each way.
+func dilateMask(m []bool, r int) []bool {
+	out := make([]bool, len(m))
+	for y := 0; y < blocksH; y++ {
+		for x := 0; x < blocksW; x++ {
+			if !m[y*blocksW+x] {
+				continue
+			}
+			for dy := -r; dy <= r; dy++ {
+				for dx := -r; dx <= r; dx++ {
+					if xx, yy := x+dx, y+dy; xx >= 0 && xx < blocksW && yy >= 0 && yy < blocksH {
+						out[yy*blocksW+xx] = true
+					}
+				}
+			}
+		}
+	}
+	return out
+}
+
+// laneFrame is a frame of an empty lane, and when it was taken.
+type laneFrame struct {
+	at time.Time
+	g  []uint8
+}
+
+// laneBefore returns the last empty-lane frame from countBackedRefBefore or more before t (the
+// oldest kept when there is none): a car coming from the keypad is already in the picture, below
+// the zone's share, a second or so before "approach" fills.
+func (z *zoneCounter) laneBefore(t time.Time) []uint8 {
+	if len(z.emptyLanes) == 0 {
+		return nil
+	}
+	ref := z.emptyLanes[0].g
+	for _, f := range z.emptyLanes {
+		if f.at.After(t.Add(-countBackedRefBefore)) {
+			break
+		}
+		ref = f.g
+	}
+	return ref
+}
+
+// heldBacked is a back-out waiting to be sent until the lane is clear of its car.
+type heldBacked struct {
+	e    countEvent
+	ref  []uint8 // the lane before the car came
+	send func()
 }
 
 // lanePath follows the front of what is in the lane (both zones): the 90th percentile of the
@@ -517,6 +652,12 @@ func (z *zoneCounter) step(t time.Time, g []uint8) []countEvent {
 		z.approachOn = false
 		if !z.reached && !z.beyondOn {
 			z.backedPending = true // decided when the window has passed
+		}
+	}
+	if !z.approachOn && !z.beyondOn && !z.backedPending && z.pending == nil && z.held == nil && a < z.aOn/2 && b < z.bOn/2 {
+		z.emptyLanes = append(z.emptyLanes, laneFrame{at: t, g: g})
+		for len(z.emptyLanes) > 1 && t.Sub(z.emptyLanes[1].at) >= countBackedRefKeep {
+			z.emptyLanes = z.emptyLanes[1:]
 		}
 	}
 	if z.backedPending && t.Sub(z.approachLast) > z.window {

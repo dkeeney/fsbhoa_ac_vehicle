@@ -1,6 +1,10 @@
 package main
 
 import (
+	"bytes"
+	"image"
+	"image/jpeg"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -147,6 +151,53 @@ func TestCountBeyondWithArmUp(t *testing.T) {
 		}
 		if len(got) != 1 || got[0] != want {
 			t.Fatalf("arm up %v: got %v, want %s", up, got, want)
+		}
+	}
+}
+
+// grayJPEG encodes a countFrame for HandleFrame.
+func grayJPEG(t *testing.T, g []uint8) []byte {
+	img := image.NewGray(image.Rect(0, 0, countWidth, countHeight))
+	copy(img.Pix, g)
+	var b bytes.Buffer
+	if err := jpeg.Encode(&b, img, &jpeg.Options{Quality: 95}); err != nil {
+		t.Fatal(err)
+	}
+	return b.Bytes()
+}
+
+// A back-out at the keypad is held while its car is still in the lane: sent once the lane is
+// clear again, not sent when the car, which was only waiting (and faded into the background),
+// drives in (2026-10-30 18:22 and 18:23 at South Enter).
+func TestCountBackedHeld(t *testing.T) {
+	for _, drivesIn := range []bool{false, true} {
+		journal, err := NewJournal(filepath.Join(t.TempDir(), "journal"), 30)
+		if err != nil {
+			t.Fatal(err)
+		}
+		c := NewCarCounter(journal, t.Logf)
+		c.gates.Store(NewGates([]GateConfig{{Name: "South Enter", OverviewIP: "192.0.2.41"}}, nil))
+		sent := 0
+		c.SetBacked(func(string, string, countEvent, time.Duration, time.Time) { sent++ })
+		zc := newTestCounter()
+		zc.ip, zc.beyondZone.Plate = "192.0.2.41", 10
+		c.cameras[zc.ip] = zc
+		rows := make([][2]int, 30)
+		if drivesIn {
+			for i := 0; i < 200; i++ { // waits 100 s at the arm, long enough to fade into the background
+				rows = append(rows, [2]int{5, 45})
+			}
+			rows = append(rows, [2]int{30, 70}, [2]int{50, 90}, [2]int{50, 90}, [2]int{60, 90}, [2]int{0, 0}, [2]int{0, 0})
+		} else {
+			rows = append(rows, [2]int{5, 45}, [2]int{5, 45}, [2]int{5, 45}, [2]int{0, 20})
+		}
+		rows = append(rows, make([][2]int, 30)...)
+		t0 := time.Date(2026, 10, 30, 18, 22, 0, 0, time.Local)
+		for i, r := range rows {
+			c.HandleFrame(zc.ip, photoFrame{at: t0.Add(time.Duration(i) * 500 * time.Millisecond), data: grayJPEG(t, countFrame(r[0], r[1]))})
+		}
+		if want := map[bool]int{false: 1, true: 0}[drivesIn]; sent != want || zc.held != nil {
+			t.Fatalf("drives in %v: sent %d back-outs (held %v), want %d", drivesIn, sent, zc.held != nil, want)
 		}
 	}
 }

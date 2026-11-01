@@ -47,7 +47,9 @@ const (
 	armUpRegion   = "arm-up"
 	// The arm takes about 2 s to rise from the lowered arm's box to the raised arm's (South
 	// Enter, 2026-10-22); a rise that took longer than this isn't dated back to its start.
-	armRiseMax      = 5 * time.Second
+	// 7 s since 2026-11-01 (5 s before): at 08:20 on 2026-10-30 a rise took 5.04 s, was dated
+	// at its end, and the sweep it made through "approach" went out as "Backed out".
+	armRiseMax      = 7 * time.Second
 	armAlertKey     = "arm_broken"
 	armBrokenAfter  = 3 * time.Minute // the tip goes off about a second before the pivot each time the arm rises, and haze or a car can hide it for a minute or so (North Enter's .11, 2026-10-21)
 	armAlertStateFn = "arm_alerts.json"
